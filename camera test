@@ -1,0 +1,31 @@
+import cv2
+
+# 0번 카메라 열기 (기본 연결된 웹캠)
+cap = cv2.VideoCapture(0)
+
+if not cap.isOpened():
+    print("❌ 카메라를 열 수 없습니다. /dev/video0 인식 여부를 확인하세요.")
+    exit()
+
+print("✅ 카메라 연결 성공! ESC 키를 눌러 종료하세요.")
+
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        print("⚠️ 프레임을 읽을 수 없습니다.")
+        break
+
+    # 좌우 반전 (웹캠 방향에 따라 보기 편하게)
+    frame = cv2.flip(frame, 1)
+
+    # 창에 영상 표시
+    cv2.imshow("Webcam Test", frame)
+
+    # ESC 키(27) 입력 시 종료
+    if cv2.waitKey(10) & 0xFF == 27:
+        break
+
+# 자원 해제
+cap.release()
+cv2.destroyAllWindows()
+print("프로그램 종료.")
