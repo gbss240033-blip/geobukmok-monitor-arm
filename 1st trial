@@ -3,6 +3,9 @@ import mediapipe as mp
 import RPi.GPIO as GPIO
 from time import sleep
 
+# ----------------------------
+# 🔧 Motor Configuration
+# ----------------------------
 GPIO.setmode(GPIO.BCM)
 GPIO.setwarnings(False)
 Ena, In1, In2 = 2, 3, 4
@@ -10,7 +13,7 @@ GPIO.setup(Ena, GPIO.OUT)
 GPIO.setup(In1, GPIO.OUT)
 GPIO.setup(In2, GPIO.OUT)
 
-pwm = GPIO.PWM(Ena, 100)  # 주파수 100Hz
+pwm = GPIO.PWM(Ena, 100)  # PWM frequency: 100Hz
 pwm.start(0)
 
 def motor_forward(speed=50):
@@ -23,6 +26,9 @@ def motor_stop():
     GPIO.output(In2, GPIO.LOW)
     pwm.ChangeDutyCycle(0)
 
+# ----------------------------
+# 🎯 Mediapipe Pose Initialization
+# ----------------------------
 mp_pose = mp.solutions.pose
 mp_drawing = mp.solutions.drawing_utils
 pose = mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5)
@@ -30,16 +36,16 @@ pose = mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5)
 cap = cv2.VideoCapture(0)
 
 baseline_distance = None
-THRESHOLD_RATIO = 0.8     # 이 비율보다 작으면 거북목
-STABLE_COUNT = 0           # 거북목이 일정 시간 지속될 때만 작동
-STABLE_THRESHOLD = 5       # 프레임 기준 (예: 5프레임 이상 거북목일 때 모터 작동)
+THRESHOLD_RATIO = 0.8     # If smaller than this ratio, forward head posture detected
+STABLE_COUNT = 0           # Count of continuous frames with bad posture
+STABLE_THRESHOLD = 5       # Trigger motor after N consecutive frames
 
-print("📷 카메라 초기화 중... 자세를 똑바로 하고 기준을 잡아주세요.")
+print("📷 Initializing camera... Please sit straight to set the baseline posture.")
 
 while cap.isOpened():
     ret, frame = cap.read()
     if not ret:
-        print("❌ 카메라 프레임을 읽을 수 없습니다.")
+        print("❌ Failed to read frame from camera.")
         break
 
     frame = cv2.flip(frame, 1)
@@ -49,52 +55,55 @@ while cap.isOpened():
     if results.pose_landmarks:
         landmarks = results.pose_landmarks.landmark
 
-        # 주요 좌표 추출
+        # Extract key points
         nose = landmarks[mp_pose.PoseLandmark.NOSE]
         left_shoulder = landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER]
         right_shoulder = landmarks[mp_pose.PoseLandmark.RIGHT_SHOULDER]
 
-        # 어깨 중앙 계산
+        # Calculate the midpoint of shoulders
         shoulder_center_y = (left_shoulder.y + right_shoulder.y) / 2
 
-        # 얼굴~어깨 거리
+        # Distance between nose and shoulder line
         distance = shoulder_center_y - nose.y
 
-        # 초기 기준 설정
+        # Set baseline posture distance
         if baseline_distance is None:
             baseline_distance = distance
-            print("✅ 기준 자세 저장 완료!")
+            print("✅ Baseline posture saved!")
         else:
             ratio = distance / baseline_distance
 
             if ratio < THRESHOLD_RATIO:
                 STABLE_COUNT += 1
-                cv2.putText(frame, "⚠️ 거북목 감지!", (50, 60),
+                cv2.putText(frame, "⚠️ Forward Head Detected!", (50, 60),
                             cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-                print(f"⚠️ 거북목 감지 ({STABLE_COUNT}/{STABLE_THRESHOLD})")
+                print(f"⚠️ Forward head detected ({STABLE_COUNT}/{STABLE_THRESHOLD})")
 
-                # 5프레임 이상 지속되면 모터 작동
+                # Activate motor if poor posture persists
                 if STABLE_COUNT >= STABLE_THRESHOLD:
-                    print("🟢 모니터암 상승 (모터 작동)")
+                    print("🟢 Motor activated (lifting monitor arm)")
                     motor_forward(50)
                     sleep(1)
                     motor_stop()
-                    STABLE_COUNT = 0  # 다시 초기화
+                    STABLE_COUNT = 0  # Reset counter
             else:
                 STABLE_COUNT = 0
-                cv2.putText(frame, "😊 좋은 자세!", (50, 60),
+                cv2.putText(frame, "😊 Good posture!", (50, 60),
                             cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
                 motor_stop()
 
         mp_drawing.draw_landmarks(frame, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
 
     cv2.imshow("Posture Detection", frame)
-    if cv2.waitKey(10) & 0xFF == 27:  # ESC 키 종료
+    if cv2.waitKey(10) & 0xFF == 27:  # ESC key to exit
         break
 
+# ----------------------------
+# 🧹 Cleanup
+# ----------------------------
 cap.release()
 motor_stop()
 pwm.stop()
 GPIO.cleanup()
 cv2.destroyAllWindows()
-print("프로그램 종료.")
+print("Program terminated.")
