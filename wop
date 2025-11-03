@@ -48,17 +48,13 @@ def motor_forward(motor='upper', speed=50, duration=1):
         GPIO.output(In1A, GPIO.LOW)
         GPIO.output(In1B, GPIO.HIGH)
         pwm1.ChangeDutyCycle(speed)
-        start_time = time()
-        while time() - start_time < duration:
-            sleep(0.01)
+        sleep(duration)
         motor_stop('upper')
     else:
         GPIO.output(In2A, GPIO.LOW)
         GPIO.output(In2B, GPIO.HIGH)
         pwm2.ChangeDutyCycle(speed)
-        start_time = time()
-        while time() - start_time < duration:
-            sleep(0.01)
+        sleep(duration)
         motor_stop('lower')
 
 def motor_backward(motor='upper', speed=50, duration=1):
@@ -67,17 +63,13 @@ def motor_backward(motor='upper', speed=50, duration=1):
         GPIO.output(In1A, GPIO.HIGH)
         GPIO.output(In1B, GPIO.LOW)
         pwm1.ChangeDutyCycle(speed)
-        start_time = time()
-        while time() - start_time < duration:
-            sleep(0.01)
+        sleep(duration)
         motor_stop('upper')
     else:
         GPIO.output(In2A, GPIO.HIGH)
         GPIO.output(In2B, GPIO.LOW)
         pwm2.ChangeDutyCycle(speed)
-        start_time = time()
-        while time() - start_time < duration:
-            sleep(0.01)
+        sleep(duration)
         motor_stop('lower')
 
 def motor_stop(motor='both'):
@@ -116,14 +108,18 @@ print("📷 Initializing system... Checking switch states.")
 
 # --- Upper Motor 초기화
 if is_bottom_pressed():
+    print("🔼 Upper motor bottom pressed — moving UP to release")
     motor_forward('upper', speed=MOTOR_SPEED, duration=MAX_UP_DURATION)
 sleep(0.2)
+print("🔽 Upper motor moving DOWN to baseline")
 motor_backward('upper', speed=MOTOR_SPEED, duration=MAX_DOWN_DURATION)
 
 # --- Lower Motor 초기화
 if is_bottom_pressed():
+    print("🔼 Lower motor bottom pressed — moving UP to release")
     motor_forward('lower', speed=MOTOR_SPEED, duration=MAX_UP_DURATION)
 sleep(0.2)
+print("🔽 Lower motor moving DOWN to baseline")
 motor_backward('lower', speed=MOTOR_SPEED, duration=MAX_DOWN_DURATION)
 
 motor_stop('both')
@@ -166,12 +162,12 @@ try:
 
             ratio = distance / baseline_distance if baseline_distance != 0 else 1.0
 
-            # BAD posture: ratio가 0.95 이상이 될 때까지 지속적으로 모터 UP
+            # BAD posture: ratio < 0.95 -> 모터 UP 지속
             if ratio < RECOVER_RATIO:
                 motor_forward('upper', MOTOR_SPEED, MOTOR_STEP_DURATION)
                 motor_forward('lower', MOTOR_SPEED, MOTOR_STEP_DURATION)
 
-            # GOOD posture: ratio >= 0.95이면 모터 DOWN (조금씩)
+            # GOOD posture: ratio >= 0.95 -> 모터 DOWN
             elif ratio >= RECOVER_RATIO:
                 motor_backward('upper', MOTOR_SPEED, MOTOR_STEP_DURATION)
                 motor_backward('lower', MOTOR_SPEED, MOTOR_STEP_DURATION)
