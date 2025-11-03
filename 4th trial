@@ -22,8 +22,8 @@ pwm.start(0)
 SWITCH_BOTTOM = 5  # 하단 리미트 스위치 (baseline calibration용)
 SWITCH_TOP = 6     # 상단 리미트 스위치 (최대 상승 제한용)
 
-GPIO.setup(SWITCH_BOTTOM, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-GPIO.setup(SWITCH_TOP, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+GPIO.setup(SWITCH_BOTTOM, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
+GPIO.setup(SWITCH_TOP, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
 
 def is_bottom_pressed():
     return GPIO.input(SWITCH_BOTTOM) == GPIO.LOW  # 스위치 눌리면 LOW
@@ -105,10 +105,11 @@ print("📷 Initializing system... Please wait while the monitor arm moves to th
 # ----------------------------
 # Step 1: Auto Calibration using Bottom Switch
 # ----------------------------
-# 모니터암을 천천히 내려서 스위치 눌릴 때까지 baseline 위치로 설정
 print("🔧 Moving down to find bottom limit switch...")
 
+# 스위치 상태 모니터링 출력 추가
 while not is_bottom_pressed():
+    print(f"SWITCH_BOTTOM: {'Pressed' if is_bottom_pressed() else 'Not pressed'} | SWITCH_TOP: {'Pressed' if is_top_pressed() else 'Not pressed'}")
     motor_backward(speed=40, duration=0.1)
 motor_stop()
 print("✅ Bottom switch detected — baseline position set.")
@@ -132,6 +133,9 @@ try:
         frame = cv2.flip(frame, 1)
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         results = pose.process(rgb_frame)
+
+        # --- 실시간 스위치 상태 출력 ---
+        print(f"[Switch Status] Bottom: {'🔴 Pressed' if is_bottom_pressed() else '⚪ Released'} | Top: {'🔴 Pressed' if is_top_pressed() else '⚪ Released'}")
 
         if results.pose_landmarks:
             landmarks = results.pose_landmarks.landmark
@@ -187,7 +191,6 @@ try:
                     good_count = 0
 
             else:
-                # Neutral zone
                 bad_count = 0
                 good_count = 0
                 print("🟡 Neutral posture (no movement)")
@@ -208,3 +211,4 @@ finally:
     pwm.stop()
     GPIO.cleanup()
     print("Program terminated safely.")
+
