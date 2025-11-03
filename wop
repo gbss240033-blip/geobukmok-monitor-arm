@@ -9,7 +9,7 @@ from time import sleep, time
 GPIO.setmode(GPIO.BCM)
 GPIO.setwarnings(False)
 
-# --- Motor 1 (Upper Arm)
+# Upper Motor
 Ena1, In1A, In1B = 2, 3, 4
 GPIO.setup(Ena1, GPIO.OUT)
 GPIO.setup(In1A, GPIO.OUT)
@@ -17,7 +17,7 @@ GPIO.setup(In1B, GPIO.OUT)
 pwm1 = GPIO.PWM(Ena1, 100)
 pwm1.start(0)
 
-# --- Motor 2 (Lower Arm)
+# Lower Motor
 EnB, In2A, In2B = 17, 22, 27
 GPIO.setup(EnB, GPIO.OUT)
 GPIO.setup(In2A, GPIO.OUT)
@@ -42,45 +42,33 @@ def is_top_pressed():
 # ----------------------------
 # Motor Control
 # ----------------------------
-def motor_forward(motor='upper', speed=50, duration=1):
-    """모터 올리기 (UP)"""
+def motor_set_state(motor='upper', state='stop', speed=50):
     if motor == 'upper':
-        GPIO.output(In1A, GPIO.LOW)
-        GPIO.output(In1B, GPIO.HIGH)
-        pwm1.ChangeDutyCycle(speed)
-        sleep(duration)
-        motor_stop('upper')
+        if state == 'up':
+            GPIO.output(In1A, GPIO.LOW)
+            GPIO.output(In1B, GPIO.HIGH)
+            pwm1.ChangeDutyCycle(speed)
+        elif state == 'down':
+            GPIO.output(In1A, GPIO.HIGH)
+            GPIO.output(In1B, GPIO.LOW)
+            pwm1.ChangeDutyCycle(speed)
+        else:
+            GPIO.output(In1A, GPIO.LOW)
+            GPIO.output(In1B, GPIO.LOW)
+            pwm1.ChangeDutyCycle(0)
     else:
-        GPIO.output(In2A, GPIO.LOW)
-        GPIO.output(In2B, GPIO.HIGH)
-        pwm2.ChangeDutyCycle(speed)
-        sleep(duration)
-        motor_stop('lower')
-
-def motor_backward(motor='upper', speed=50, duration=1):
-    """모터 내리기 (DOWN)"""
-    if motor == 'upper':
-        GPIO.output(In1A, GPIO.HIGH)
-        GPIO.output(In1B, GPIO.LOW)
-        pwm1.ChangeDutyCycle(speed)
-        sleep(duration)
-        motor_stop('upper')
-    else:
-        GPIO.output(In2A, GPIO.HIGH)
-        GPIO.output(In2B, GPIO.LOW)
-        pwm2.ChangeDutyCycle(speed)
-        sleep(duration)
-        motor_stop('lower')
-
-def motor_stop(motor='both'):
-    if motor in ['upper', 'both']:
-        GPIO.output(In1A, GPIO.LOW)
-        GPIO.output(In1B, GPIO.LOW)
-        pwm1.ChangeDutyCycle(0)
-    if motor in ['lower', 'both']:
-        GPIO.output(In2A, GPIO.LOW)
-        GPIO.output(In2B, GPIO.LOW)
-        pwm2.ChangeDutyCycle(0)
+        if state == 'up':
+            GPIO.output(In2A, GPIO.LOW)
+            GPIO.output(In2B, GPIO.HIGH)
+            pwm2.ChangeDutyCycle(speed)
+        elif state == 'down':
+            GPIO.output(In2A, GPIO.HIGH)
+            GPIO.output(In2B, GPIO.LOW)
+            pwm2.ChangeDutyCycle(speed)
+        else:
+            GPIO.output(In2A, GPIO.LOW)
+            GPIO.output(In2B, GPIO.LOW)
+            pwm2.ChangeDutyCycle(0)
 
 # ----------------------------
 # Pose Detection Setup
@@ -93,37 +81,42 @@ cap = cv2.VideoCapture(0)
 # Parameters
 # ----------------------------
 baseline_distance = None
-THRESHOLD_RATIO = 0.8
 RECOVER_RATIO = 0.95
-
 MOTOR_SPEED = 50
-MOTOR_STEP_DURATION = 0.2
-MAX_UP_DURATION = 2.0
-MAX_DOWN_DURATION = 2.0
+LOOP_DELAY = 0.2
+
+# 최대 도달 시간을 기준으로 최대 이동 거리 제한
+MAX_UP_TIME = 5.0  # 초 단위, 모터 최대 올라갈 시간
+MAX_DOWN_TIME = 5.0  # 모터 최대 내려갈 시간
+upper_up_time = 0.0
+lower_up_time = 0.0
+
+motor_state_upper = 'stop'
+motor_state_lower = 'stop'
 
 # ----------------------------
 # Step 0: Initialization
 # ----------------------------
 print("📷 Initializing system... Checking switch states.")
 
-# --- Upper Motor 초기화
+# Upper Motor 초기화
 if is_bottom_pressed():
     print("🔼 Upper motor bottom pressed — moving UP to release")
-    motor_forward('upper', speed=MOTOR_SPEED, duration=MAX_UP_DURATION)
-sleep(0.2)
-print("🔽 Upper motor moving DOWN to baseline")
-motor_backward('upper', speed=MOTOR_SPEED, duration=MAX_DOWN_DURATION)
+    motor_set_state('upper', 'up', MOTOR_SPEED)
+    sleep(2)
+motor_set_state('upper', 'down', MOTOR_SPEED)
+sleep(2)
+motor_set_state('upper', 'stop')
 
-# --- Lower Motor 초기화
+# Lower Motor 초기화
 if is_bottom_pressed():
     print("🔼 Lower motor bottom pressed — moving UP to release")
-    motor_forward('lower', speed=MOTOR_SPEED, duration=MAX_UP_DURATION)
-sleep(0.2)
-print("🔽 Lower motor moving DOWN to baseline")
-motor_backward('lower', speed=MOTOR_SPEED, duration=MAX_DOWN_DURATION)
+    motor_set_state('lower', 'up', MOTOR_SPEED)
+    sleep(2)
+motor_set_state('lower', 'down', MOTOR_SPEED)
+sleep(2)
+motor_set_state('lower', 'stop')
 
-motor_stop('both')
-sleep(1)
 print("📷 Camera feed starting. Sit upright to calibrate baseline posture.")
 
 # ----------------------------
@@ -162,25 +155,40 @@ try:
 
             ratio = distance / baseline_distance if baseline_distance != 0 else 1.0
 
-            # BAD posture: ratio < 0.95 -> 모터 UP 지속
+            # 거북목 보정: ratio < 0.95 -> UP, >=0.95 -> STOP
             if ratio < RECOVER_RATIO:
-                motor_forward('upper', MOTOR_SPEED, MOTOR_STEP_DURATION)
-                motor_forward('lower', MOTOR_SPEED, MOTOR_STEP_DURATION)
+                # Upper motor: 최대 시간 제한 체크
+                if upper_up_time < MAX_UP_TIME and not is_top_pressed():
+                    motor_state_upper = 'up'
+                    upper_up_time += LOOP_DELAY
+                else:
+                    motor_state_upper = 'stop'
 
-            # GOOD posture: ratio >= 0.95 -> 모터 DOWN
-            elif ratio >= RECOVER_RATIO:
-                motor_backward('upper', MOTOR_SPEED, MOTOR_STEP_DURATION)
-                motor_backward('lower', MOTOR_SPEED, MOTOR_STEP_DURATION)
+                # Lower motor: 최대 시간 제한 체크
+                if lower_up_time < MAX_UP_TIME and not is_top_pressed():
+                    motor_state_lower = 'up'
+                    lower_up_time += LOOP_DELAY
+                else:
+                    motor_state_lower = 'stop'
+            else:
+                motor_state_upper = 'stop'
+                motor_state_lower = 'stop'
 
-        sleep(0.2)
+        # 모터 상태 적용
+        motor_set_state('upper', motor_state_upper, MOTOR_SPEED)
+        motor_set_state('lower', motor_state_lower, MOTOR_SPEED)
+
+        sleep(LOOP_DELAY)
 
 except KeyboardInterrupt:
     print("🛑 Interrupted by user.")
 
 finally:
     cap.release()
-    motor_stop('both')
+    motor_set_state('upper', 'stop')
+    motor_set_state('lower', 'stop')
     pwm1.stop()
     pwm2.stop()
     GPIO.cleanup()
     print("Program terminated safely.")
+
