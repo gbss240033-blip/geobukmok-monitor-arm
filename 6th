@@ -1,0 +1,248 @@
+import cv2
+import mediapipe as mp
+import RPi.GPIO as GPIO
+from time import sleep, time
+
+# ----------------------------
+# Motor Setup
+# ----------------------------
+GPIO.setmode(GPIO.BCM)
+GPIO.setwarnings(False)
+
+# --- Motor 1 (Upper Arm)
+Ena1, In1A, In1B = 2, 3, 4
+GPIO.setup(Ena1, GPIO.OUT)
+GPIO.setup(In1A, GPIO.OUT)
+GPIO.setup(In1B, GPIO.OUT)
+pwm1 = GPIO.PWM(Ena1, 100)
+pwm1.start(0)
+
+# --- Motor 2 (Lower Arm)
+EnB, In2A, In2B = 17, 22, 27  # In2A, In2B 핀 확인 필요
+GPIO.setup(EnB, GPIO.OUT)
+GPIO.setup(In2A, GPIO.OUT)
+GPIO.setup(In2B, GPIO.OUT)
+pwm2 = GPIO.PWM(EnB, 100)
+pwm2.start(0)
+
+# ----------------------------
+# Limit Switch Setup
+# ----------------------------
+SWITCH_BOTTOM = 5  # 하단
+SWITCH_TOP = 6     # 상단
+GPIO.setup(SWITCH_BOTTOM, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+GPIO.setup(SWITCH_TOP, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+
+def is_bottom_pressed():
+    return GPIO.input(SWITCH_BOTTOM) == GPIO.LOW
+
+def is_top_pressed():
+    return GPIO.input(SWITCH_TOP) == GPIO.LOW
+
+# ----------------------------
+# Motor Control
+# ----------------------------
+def motor_forward(motor='upper', speed=50, duration=1):
+    """모터 올리기 (UP)"""
+    if is_top_pressed():
+        print("🚫 Top limit reached — cannot move upward.")
+        motor_stop(motor)
+        return
+    if motor == 'upper':
+        GPIO.output(In1A, GPIO.LOW)
+        GPIO.output(In1B, GPIO.HIGH)
+        pwm1.ChangeDutyCycle(speed)
+        start_time = time()
+        while time() - start_time < duration:
+            if is_top_pressed():
+                print("🧱 Upper motor reached top limit — stopping.")
+                break
+            sleep(0.01)
+        motor_stop('upper')
+    else:
+        GPIO.output(In2A, GPIO.LOW)
+        GPIO.output(In2B, GPIO.HIGH)
+        pwm2.ChangeDutyCycle(speed)
+        start_time = time()
+        while time() - start_time < duration:
+            if is_top_pressed():
+                print("🧱 Lower motor reached top limit — stopping.")
+                break
+            sleep(0.01)
+        motor_stop('lower')
+
+def motor_backward(motor='upper', speed=50, duration=1):
+    """모터 내리기 (DOWN)"""
+    if is_bottom_pressed():
+        print("🚫 Bottom limit reached — cannot move downward.")
+        motor_stop(motor)
+        return
+    if motor == 'upper':
+        GPIO.output(In1A, GPIO.HIGH)
+        GPIO.output(In1B, GPIO.LOW)
+        pwm1.ChangeDutyCycle(speed)
+        start_time = time()
+        while time() - start_time < duration:
+            if is_bottom_pressed():
+                print("🧱 Upper motor reached bottom limit — stopping.")
+                break
+            sleep(0.01)
+        motor_stop('upper')
+    else:
+        GPIO.output(In2A, GPIO.HIGH)
+        GPIO.output(In2B, GPIO.LOW)
+        pwm2.ChangeDutyCycle(speed)
+        start_time = time()
+        while time() - start_time < duration:
+            if is_bottom_pressed():
+                print("🧱 Lower motor reached bottom limit — stopping.")
+                break
+            sleep(0.01)
+        motor_stop('lower')
+
+def motor_stop(motor='both'):
+    if motor in ['upper', 'both']:
+        GPIO.output(In1A, GPIO.LOW)
+        GPIO.output(In1B, GPIO.LOW)
+        pwm1.ChangeDutyCycle(0)
+    if motor in ['lower', 'both']:
+        GPIO.output(In2A, GPIO.LOW)
+        GPIO.output(In2B, GPIO.LOW)
+        pwm2.ChangeDutyCycle(0)
+
+# ----------------------------
+# Pose Detection Setup
+# ----------------------------
+mp_pose = mp.solutions.pose
+pose = mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5)
+cap = cv2.VideoCapture(0)
+
+# ----------------------------
+# Parameters
+# ----------------------------
+baseline_distance = None
+THRESHOLD_RATIO = 0.8
+RECOVER_RATIO = 0.95
+BAD_STABLE_THRESHOLD = 5
+GOOD_STABLE_THRESHOLD = 15
+
+MAX_MOVES = 5
+current_position_upper = 0
+current_position_lower = 0
+
+MOTOR_STEP_DURATION = 1.0
+MOTOR_SPEED = 50
+
+bad_count = 0
+good_count = 0
+last_move_time = 0
+MIN_INTERVAL_BETWEEN_MOVES = 0.8
+MAX_UP_DURATION = 2.0
+MAX_DOWN_DURATION = 2.0
+
+# ----------------------------
+# Step 0: Initialization
+# ----------------------------
+print("📷 Initializing system... Checking switch states.")
+
+# --- Upper Motor 초기화
+if is_bottom_pressed():
+    print("🔼 Upper motor bottom pressed at start — moving UP to release.")
+    motor_forward('upper', speed=MOTOR_SPEED, duration=MAX_UP_DURATION)
+sleep(0.2)
+print("🔽 Upper motor moving DOWN to baseline.")
+motor_backward('upper', speed=MOTOR_SPEED, duration=MAX_DOWN_DURATION)
+
+# --- Lower Motor 초기화
+if is_bottom_pressed():
+    print("🔼 Lower motor bottom pressed at start — moving UP to release.")
+    motor_forward('lower', speed=MOTOR_SPEED, duration=MAX_UP_DURATION)
+sleep(0.2)
+print("🔽 Lower motor moving DOWN to baseline.")
+motor_backward('lower', speed=MOTOR_SPEED, duration=MAX_DOWN_DURATION)
+
+motor_stop('both')
+baseline_distance = None
+sleep(1)
+print("📷 Camera feed starting. Sit upright to calibrate baseline posture.")
+
+# 이후 자세 기반 모터 제어는 기존 로직을 motor_forward/ backward('upper' or 'lower') 형태로 호출 가능
+# 예: motor_forward('upper', speed=50, duration=1.0)
+
+# ----------------------------
+# 기존 자세 기반 제어 루프는 필요시 그대로 적용
+# ----------------------------
+try:
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            print("❌ Unable to read camera frame.")
+            break
+        frame = cv2.flip(frame, 1)
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = pose.process(rgb_frame)
+
+        print(f"[Switch Status] Bottom: {'🔴 Pressed' if is_bottom_pressed() else '⚪ Released'} | Top: {'🔴 Pressed' if is_top_pressed() else '⚪ Released'}")
+
+        if results.pose_landmarks:
+            landmarks = results.pose_landmarks.landmark
+            nose = landmarks[mp_pose.PoseLandmark.NOSE]
+            left_shoulder = landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER]
+            right_shoulder = landmarks[mp_pose.PoseLandmark.RIGHT_SHOULDER]
+
+            shoulder_center_y = (left_shoulder.y + right_shoulder.y) / 2.0
+            distance = shoulder_center_y - nose.y
+
+            if baseline_distance is None:
+                baseline_distance = distance
+                print("✅ Posture baseline saved! Maintain good posture.")
+                continue
+
+            ratio = distance / baseline_distance if baseline_distance != 0 else 1.0
+
+            # BAD posture
+            if ratio < THRESHOLD_RATIO:
+                bad_count += 1
+                good_count = 0
+                if bad_count >= BAD_STABLE_THRESHOLD:
+                    now = time()
+                    if current_position_upper < MAX_MOVES:
+                        motor_forward('upper', MOTOR_SPEED, MOTOR_STEP_DURATION)
+                        current_position_upper += 1
+                        last_move_time = now
+                    if current_position_lower < MAX_MOVES:
+                        motor_forward('lower', MOTOR_SPEED, MOTOR_STEP_DURATION)
+                        current_position_lower += 1
+                        last_move_time = now
+                    bad_count = 0
+
+            # GOOD posture
+            elif ratio >= RECOVER_RATIO:
+                good_count += 1
+                bad_count = 0
+                if good_count >= GOOD_STABLE_THRESHOLD:
+                    now = time()
+                    if current_position_upper > 0:
+                        motor_backward('upper', MOTOR_SPEED, MOTOR_STEP_DURATION)
+                        current_position_upper -= 1
+                        last_move_time = now
+                    if current_position_lower > 0:
+                        motor_backward('lower', MOTOR_SPEED, MOTOR_STEP_DURATION)
+                        current_position_lower -= 1
+                        last_move_time = now
+                    good_count = 0
+            else:
+                bad_count = 0
+                good_count = 0
+
+        else:
+            bad_count = 0
+            good_count = 0
+
+        sleep(0.2)
+
+except KeyboardInterrupt:
+    print("🛑 Interrupted by user.")
+
+finally:
+   
