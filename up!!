@@ -1,0 +1,66 @@
+import RPi.GPIO as GPIO
+from time import sleep
+
+# ----------------------------
+# GPIO Setup
+# ----------------------------
+GPIO.setmode(GPIO.BCM)
+GPIO.setwarnings(False)
+
+# 하부 모터 핀
+Ena1, In1A, In1B = 2, 3, 4
+GPIO.setup(Ena1, GPIO.OUT)
+GPIO.setup(In1A, GPIO.OUT)
+GPIO.setup(In1B, GPIO.OUT)
+
+# 상부 모터 핀
+Ena2, In2A, In2B = 17, 22, 27
+GPIO.setup(Ena2, GPIO.OUT)
+GPIO.setup(In2A, GPIO.OUT)
+GPIO.setup(In2B, GPIO.OUT)
+
+# PWM 설정
+pwm1 = GPIO.PWM(Ena1, 100)  # 100Hz
+pwm1.start(50)              # 50% 속도
+
+pwm2 = GPIO.PWM(Ena2, 100)
+pwm2.start(50)
+
+# ----------------------------
+# Motor Control Functions
+# ----------------------------
+def motor1_up():
+    GPIO.output(In1A, GPIO.LOW)
+    GPIO.output(In1B, GPIO.HIGH)
+
+def motor2_up():
+    GPIO.output(In2A, GPIO.LOW)
+    GPIO.output(In2B, GPIO.HIGH)
+
+def stop_all():
+    GPIO.output(In1A, GPIO.LOW)
+    GPIO.output(In1B, GPIO.LOW)
+    GPIO.output(In2A, GPIO.LOW)
+    GPIO.output(In2B, GPIO.LOW)
+    pwm1.ChangeDutyCycle(0)
+    pwm2.ChangeDutyCycle(0)
+
+# ----------------------------
+# Main Loop
+# ----------------------------
+try:
+    print("🔼 하부/상부 모터 모두 계속 위로 회전")
+    motor1_up()
+    motor2_up()
+    while True:
+        sleep(0.1)  # CPU 과부하 방지
+
+except KeyboardInterrupt:
+    print("🛑 사용자 중단")
+
+finally:
+    stop_all()
+    pwm1.stop()
+    pwm2.stop()
+    GPIO.cleanup()
+    print("프로그램 종료")
