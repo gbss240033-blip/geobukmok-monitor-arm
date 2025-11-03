@@ -1,0 +1,165 @@
+import RPi.GPIO as GPIO
+from time import sleep, time
+
+# ========================================
+# GPIO Setup
+# ========================================
+GPIO.setmode(GPIO.BCM)
+GPIO.setwarnings(False)
+
+# --- Upper Motor ---
+Ena1, In1A, In1B = 2, 3, 4
+GPIO.setup(Ena1, GPIO.OUT)
+GPIO.setup(In1A, GPIO.OUT)
+GPIO.setup(In1B, GPIO.OUT)
+pwm1 = GPIO.PWM(Ena1, 100)
+pwm1.start(0)
+
+# --- Lower Motor ---
+EnB, In2A, In2B = 17, 22, 27
+GPIO.setup(EnB, GPIO.OUT)
+GPIO.setup(In2A, GPIO.OUT)
+GPIO.setup(In2B, GPIO.OUT)
+pwm2 = GPIO.PWM(EnB, 100)
+pwm2.start(0)
+
+# --- Limit Switches (각 모터당 하나씩) ---
+SWITCH_UPPER = 5   # Upper motor의 하단 스위치
+SWITCH_LOWER = 6   # Lower motor의 하단 스위치
+
+GPIO.setup(SWITCH_UPPER, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+GPIO.setup(SWITCH_LOWER, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+
+def is_upper_switch_pressed():
+    return GPIO.input(SWITCH_UPPER) == GPIO.LOW
+
+def is_lower_switch_pressed():
+    return GPIO.input(SWITCH_LOWER) == GPIO.LOW
+
+# ========================================
+# Motor Control Functions
+# ========================================
+def upper_motor_up(speed=50):
+    """Upper motor 상승"""
+    GPIO.output(In1A, GPIO.LOW)
+    GPIO.output(In1B, GPIO.HIGH)
+    pwm1.ChangeDutyCycle(speed)
+
+def upper_motor_down(speed=50):
+    """Upper motor 하강"""
+    GPIO.output(In1A, GPIO.HIGH)
+    GPIO.output(In1B, GPIO.LOW)
+    pwm1.ChangeDutyCycle(speed)
+
+def upper_motor_stop():
+    """Upper motor 정지"""
+    GPIO.output(In1A, GPIO.LOW)
+    GPIO.output(In1B, GPIO.LOW)
+    pwm1.ChangeDutyCycle(0)
+
+def lower_motor_up(speed=50):
+    """Lower motor 상승"""
+    GPIO.output(In2A, GPIO.LOW)
+    GPIO.output(In2B, GPIO.HIGH)
+    pwm2.ChangeDutyCycle(speed)
+
+def lower_motor_down(speed=50):
+    """Lower motor 하강"""
+    GPIO.output(In2A, GPIO.HIGH)
+    GPIO.output(In2B, GPIO.LOW)
+    pwm2.ChangeDutyCycle(speed)
+
+def lower_motor_stop():
+    """Lower motor 정지"""
+    GPIO.output(In2A, GPIO.LOW)
+    GPIO.output(In2B, GPIO.LOW)
+    pwm2.ChangeDutyCycle(0)
+
+# ========================================
+# Phase 1: 초기 상태 확인 및 클리어
+# ========================================
+print("🔧 Initialization Phase 1: Checking initial switch states...")
+print("")
+
+MOTOR_SPEED = 50
+UP_CLEAR_TIME = 2.0  # 위로 올리는 시간 (초)
+
+upper_needs_clear = is_upper_switch_pressed()
+lower_needs_clear = is_lower_switch_pressed()
+
+if upper_needs_clear:
+    print("⚠️  UPPER switch is already pressed. Moving UP to clear...")
+if lower_needs_clear:
+    print("⚠️  LOWER switch is already pressed. Moving UP to clear...")
+
+# 눌려있는 모터들을 위로 올리기
+if upper_needs_clear or lower_needs_clear:
+    start_time = time()
+    while time() - start_time < UP_CLEAR_TIME:
+        if upper_needs_clear:
+            upper_motor_up(MOTOR_SPEED)
+        if lower_needs_clear:
+            lower_motor_up(MOTOR_SPEED)
+        sleep(0.05)
+    
+    # 정지
+    if upper_needs_clear:
+        upper_motor_stop()
+        print("✅ UPPER motor cleared from switch")
+    if lower_needs_clear:
+        lower_motor_stop()
+        print("✅ LOWER motor cleared from switch")
+    
+    sleep(0.5)
+else:
+    print("✅ No switches pressed initially. Proceeding directly to descent.")
+    print("")
+
+# ========================================
+# Phase 2: 모든 모터를 하강시켜 스위치 누르기
+# ========================================
+print("")
+print("🔧 Initialization Phase 2: Moving motors DOWN to find switches...")
+print("")
+
+upper_complete = False
+lower_complete = False
+
+try:
+    while not (upper_complete and lower_complete):
+        # Upper motor 제어
+        if not upper_complete:
+            if is_upper_switch_pressed():
+                upper_motor_stop()
+                upper_complete = True
+                print("✅ UPPER motor switch pressed - STOPPED")
+            else:
+                upper_motor_down(MOTOR_SPEED)
+        
+        # Lower motor 제어
+        if not lower_complete:
+            if is_lower_switch_pressed():
+                lower_motor_stop()
+                lower_complete = True
+                print("✅ LOWER motor switch pressed - STOPPED")
+            else:
+                lower_motor_down(MOTOR_SPEED)
+        
+        sleep(0.05)
+
+    print("")
+    print("="*50)
+    print("🎉 Initialization Complete!")
+    print("🎉 Both motors at bottom position!")
+    print("="*50)
+
+except KeyboardInterrupt:
+    print("\n🛑 Interrupted by user.")
+
+finally:
+    upper_motor_stop()
+    lower_motor_stop()
+    pwm1.stop()
+    pwm2.stop()
+    GPIO.cleanup()
+    print("✅ Program terminated safely.")
