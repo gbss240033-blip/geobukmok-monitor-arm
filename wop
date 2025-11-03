@@ -22,7 +22,7 @@ EnB, In2A, In2B = 17, 22, 27
 GPIO.setup(EnB, GPIO.OUT)
 GPIO.setup(In2A, GPIO.OUT)
 GPIO.setup(In2B, GPIO.OUT)
-pwm2 = GPIO.PWM(EnB, 100)
+pwm2 = GPIO.PWM(En2A, 100)
 pwm2.start(0)
 
 # ----------------------------
@@ -86,8 +86,7 @@ MOTOR_SPEED = 50
 LOOP_DELAY = 0.2
 
 # 최대 도달 시간을 기준으로 최대 이동 거리 제한
-MAX_UP_TIME = 5.0  # 초 단위, 모터 최대 올라갈 시간
-MAX_DOWN_TIME = 5.0  # 모터 최대 내려갈 시간
+MAX_UP_TIME = 5.0
 upper_up_time = 0.0
 lower_up_time = 0.0
 
@@ -120,9 +119,36 @@ motor_set_state('lower', 'stop')
 print("📷 Camera feed starting. Sit upright to calibrate baseline posture.")
 
 # ----------------------------
-# Posture-based Motor Control Loop
+# Step 1: Baseline Calibration
 # ----------------------------
+calibration_done = False
 try:
+    while not calibration_done and cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            print("❌ Unable to read camera frame.")
+            break
+        frame = cv2.flip(frame, 1)
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = pose.process(rgb_frame)
+
+        if results.pose_landmarks:
+            landmarks = results.pose_landmarks.landmark
+            nose = landmarks[mp_pose.PoseLandmark.NOSE]
+            left_shoulder = landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER]
+            right_shoulder = landmarks[mp_pose.PoseLandmark.RIGHT_SHOULDER]
+            shoulder_center_y = (left_shoulder.y + right_shoulder.y) / 2.0
+            distance = shoulder_center_y - nose.y
+
+            baseline_distance = distance
+            calibration_done = True
+            print("✅ Baseline posture captured. Start monitoring.")
+
+        sleep(0.1)
+
+# ----------------------------
+# Step 2: Posture-based Motor Control
+# ----------------------------
     switch_status_printed = False
     while cap.isOpened():
         ret, frame = cap.read()
@@ -133,29 +159,22 @@ try:
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         results = pose.process(rgb_frame)
 
-        # Switch status 출력: 둘 다 pressed 상태가 될 때까지만
+        # Switch status 출력: 초기 한 번만
         if not switch_status_printed:
             print(f"[Switch Status] Bottom: {'🔴 Pressed' if is_bottom_pressed() else '⚪ Released'} | Top: {'🔴 Pressed' if is_top_pressed() else '⚪ Released'}")
-            if is_bottom_pressed() and is_top_pressed():
-                switch_status_printed = True
+            switch_status_printed = True
 
-        if results.pose_landmarks:
+        if results.pose_landmarks and baseline_distance:
             landmarks = results.pose_landmarks.landmark
             nose = landmarks[mp_pose.PoseLandmark.NOSE]
             left_shoulder = landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER]
             right_shoulder = landmarks[mp_pose.PoseLandmark.RIGHT_SHOULDER]
-
             shoulder_center_y = (left_shoulder.y + right_shoulder.y) / 2.0
             distance = shoulder_center_y - nose.y
 
-            if baseline_distance is None:
-                baseline_distance = distance
-                print("✅ Posture baseline saved! Maintain good posture.")
-                continue
-
             ratio = distance / baseline_distance if baseline_distance != 0 else 1.0
 
-            # 거북목 보정: ratio < 0.95 -> UP, >=0.95 -> STOP
+            # 거북목 보정: ratio < 0.95 -> UP, ratio >= 0.95 -> STOP
             if ratio < RECOVER_RATIO:
                 # Upper motor: 최대 시간 제한 체크
                 if upper_up_time < MAX_UP_TIME and not is_top_pressed():
@@ -164,7 +183,7 @@ try:
                 else:
                     motor_state_upper = 'stop'
 
-                # Lower motor: 최대 시간 제한 체크
+                # Lower motor
                 if lower_up_time < MAX_UP_TIME and not is_top_pressed():
                     motor_state_lower = 'up'
                     lower_up_time += LOOP_DELAY
