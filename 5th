@@ -1,0 +1,208 @@
+import cv2
+import mediapipe as mp
+import RPi.GPIO as GPIO
+from time import sleep, time
+
+# ----------------------------
+# Motor Setup
+# ----------------------------
+GPIO.setmode(GPIO.BCM)
+GPIO.setwarnings(False)
+
+# 모터 핀 (상·하부 통합)
+Ena, In1, In2 = 2, 3, 4
+GPIO.setup(Ena, GPIO.OUT)
+GPIO.setup(In1, GPIO.OUT)
+GPIO.setup(In2, GPIO.OUT)
+
+pwm = GPIO.PWM(Ena, 100)  # 100Hz
+pwm.start(0)
+
+# ----------------------------
+# Limit Switch Setup
+# ----------------------------
+SWITCH_BOTTOM = 5  # 하단
+SWITCH_TOP = 6     # 상단
+
+# 3.3V → GPIO → GND 방식이라 PUD_UP 사용
+GPIO.setup(SWITCH_BOTTOM, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+GPIO.setup(SWITCH_TOP, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+
+def is_bottom_pressed():
+    return GPIO.input(SWITCH_BOTTOM) == GPIO.LOW
+
+def is_top_pressed():
+    return GPIO.input(SWITCH_TOP) == GPIO.LOW
+
+# ----------------------------
+# Motor Control
+# ----------------------------
+def motor_forward(speed=50, duration=1):
+    """모터 올리기 (UP)"""
+    if is_top_pressed():
+        print("🚫 Top limit reached — cannot move upward.")
+        motor_stop()
+        return
+    GPIO.output(In1, GPIO.LOW)
+    GPIO.output(In2, GPIO.HIGH)
+    pwm.ChangeDutyCycle(speed)
+    start_time = time()
+    while time() - start_time < duration:
+        if is_top_pressed():
+            print("🧱 Top limit reached during motion — stopping.")
+            break
+        sleep(0.01)
+    motor_stop()
+
+def motor_backward(speed=50, duration=1):
+    """모터 내리기 (DOWN)"""
+    if is_bottom_pressed():
+        print("🚫 Bottom limit reached — cannot move downward.")
+        motor_stop()
+        return
+    GPIO.output(In1, GPIO.HIGH)
+    GPIO.output(In2, GPIO.LOW)
+    pwm.ChangeDutyCycle(speed)
+    start_time = time()
+    while time() - start_time < duration:
+        if is_bottom_pressed():
+            print("🧱 Bottom limit reached during motion — stopping.")
+            break
+        sleep(0.01)
+    motor_stop()
+
+def motor_stop():
+    GPIO.output(In1, GPIO.LOW)
+    GPIO.output(In2, GPIO.LOW)
+    pwm.ChangeDutyCycle(0)
+
+# ----------------------------
+# Pose Detection Setup
+# ----------------------------
+mp_pose = mp.solutions.pose
+pose = mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5)
+cap = cv2.VideoCapture(0)
+
+# ----------------------------
+# Parameters
+# ----------------------------
+baseline_distance = None
+THRESHOLD_RATIO = 0.8
+RECOVER_RATIO = 0.95
+BAD_STABLE_THRESHOLD = 5
+GOOD_STABLE_THRESHOLD = 15
+
+MAX_MOVES = 5
+current_position = 0
+
+MOTOR_STEP_DURATION = 1.0
+MOTOR_SPEED = 50
+
+bad_count = 0
+good_count = 0
+last_move_time = 0
+MIN_INTERVAL_BETWEEN_MOVES = 0.8
+
+print("📷 Initializing system... Moving monitor arm to baseline position.")
+
+# ----------------------------
+# Step 1: Auto Calibration using Bottom Switch
+# ----------------------------
+print("🔧 Moving down to find bottom limit switch...")
+while not is_bottom_pressed():
+    print(f"[Switch Status] Bottom: {'Pressed' if is_bottom_pressed() else 'Released'} | Top: {'Pressed' if is_top_pressed() else 'Released'}")
+    motor_backward(speed=40, duration=0.1)
+motor_stop()
+print("✅ Bottom switch detected — baseline position set.")
+current_position = 0
+baseline_distance = None
+sleep(1)
+print("📷 Starting camera feed. Sit upright to calibrate posture baseline.")
+
+# ----------------------------
+# Step 2: Pose Detection Loop
+# ----------------------------
+try:
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            print("❌ Unable to read camera frame.")
+            break
+
+        frame = cv2.flip(frame, 1)
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = pose.process(rgb_frame)
+
+        # --- 실시간 스위치 상태 출력 ---
+        print(f"[Switch Status] Bottom: {'🔴 Pressed' if is_bottom_pressed() else '⚪ Released'} | Top: {'🔴 Pressed' if is_top_pressed() else '⚪ Released'}")
+
+        if results.pose_landmarks:
+            landmarks = results.pose_landmarks.landmark
+            nose = landmarks[mp_pose.PoseLandmark.NOSE]
+            left_shoulder = landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER]
+            right_shoulder = landmarks[mp_pose.PoseLandmark.RIGHT_SHOULDER]
+
+            shoulder_center_y = (left_shoulder.y + right_shoulder.y) / 2.0
+            distance = shoulder_center_y - nose.y
+
+            # 최초 baseline 인식
+            if baseline_distance is None:
+                baseline_distance = distance
+                print("✅ Posture baseline saved! Maintain good posture.")
+                continue
+
+            ratio = distance / baseline_distance if baseline_distance != 0 else 1.0
+
+            # --- BAD posture (forward head)
+            if ratio < THRESHOLD_RATIO:
+                bad_count += 1
+                good_count = 0
+                print(f"⚠️ Forward head detected ({bad_count}/{BAD_STABLE_THRESHOLD})")
+                if bad_count >= BAD_STABLE_THRESHOLD:
+                    now = time()
+                    if current_position < MAX_MOVES and (now - last_move_time) > MIN_INTERVAL_BETWEEN_MOVES:
+                        if not is_top_pressed():
+                            print(f"🟢 Moving monitor arm UP: {current_position} → {current_position + 1}")
+                            motor_forward(speed=MOTOR_SPEED, duration=MOTOR_STEP_DURATION)
+                            current_position += 1
+                            last_move_time = time()
+                        else:
+                            print("🔴 Top limit switch active — cannot move up.")
+                    bad_count = 0
+
+            # --- GOOD posture (recovered)
+            elif ratio >= RECOVER_RATIO:
+                good_count += 1
+                bad_count = 0
+                print(f"😊 Good posture maintained ({good_count}/{GOOD_STABLE_THRESHOLD})")
+                if good_count >= GOOD_STABLE_THRESHOLD:
+                    now = time()
+                    if current_position > 0 and (now - last_move_time) > MIN_INTERVAL_BETWEEN_MOVES:
+                        if not is_bottom_pressed():
+                            print(f"🔵 Moving monitor arm DOWN: {current_position} → {current_position - 1}")
+                            motor_backward(speed=MOTOR_SPEED, duration=MOTOR_STEP_DURATION)
+                            current_position -= 1
+                            last_move_time = time()
+                        else:
+                            print("ℹ️ Bottom switch active — cannot move further down.")
+                    good_count = 0
+            else:
+                bad_count = 0
+                good_count = 0
+                print("🟡 Neutral posture (no movement)")
+        else:
+            bad_count = 0
+            good_count = 0
+            print("❗ No person detected — waiting...")
+
+        sleep(0.2)
+
+except KeyboardInterrupt:
+    print("🛑 Interrupted by user.")
+
+finally:
+    cap.release()
+    motor_stop()
+    pwm.stop()
+    GPIO.cleanup()
+    print("Program terminated safely.")
