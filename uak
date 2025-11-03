@@ -1,0 +1,285 @@
+import cv2
+import mediapipe as mp
+import RPi.GPIO as GPIO
+from time import sleep, time
+
+# ========================================
+# GPIO & Motor Setup
+# ========================================
+GPIO.setmode(GPIO.BCM)
+GPIO.setwarnings(False)
+
+# --- Upper Motor ---
+Ena1, In1A, In1B = 2, 3, 4
+GPIO.setup(Ena1, GPIO.OUT)
+GPIO.setup(In1A, GPIO.OUT)
+GPIO.setup(In1B, GPIO.OUT)
+pwm1 = GPIO.PWM(Ena1, 100)
+pwm1.start(0)
+
+# --- Lower Motor ---
+EnB, In2A, In2B = 17, 22, 27
+GPIO.setup(EnB, GPIO.OUT)
+GPIO.setup(In2A, GPIO.OUT)
+GPIO.setup(In2B, GPIO.OUT)
+pwm2 = GPIO.PWM(EnB, 100)
+pwm2.start(0)
+
+# --- Limit Switches ---
+SWITCH_BOTTOM = 5  # bottom switch
+SWITCH_TOP = 6     # top switch
+GPIO.setup(SWITCH_BOTTOM, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+GPIO.setup(SWITCH_TOP, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+
+def is_bottom_pressed():
+    return GPIO.input(SWITCH_BOTTOM) == GPIO.LOW
+
+def is_top_pressed():
+    return GPIO.input(SWITCH_TOP) == GPIO.LOW
+
+# ========================================
+# Motor Control Functions
+# ========================================
+def motor_up(speed=50):
+    """Move both motors upward"""
+    if is_top_pressed():
+        motor_stop()
+        print("🧱 Top limit reached - stop UP motion.")
+        return
+    GPIO.output(In1A, GPIO.LOW)
+    GPIO.output(In1B, GPIO.HIGH)
+    pwm1.ChangeDutyCycle(speed)
+    GPIO.output(In2A, GPIO.LOW)
+    GPIO.output(In2B, GPIO.HIGH)
+    pwm2.ChangeDutyCycle(speed)
+
+def motor_down(speed=50):
+    """Move both motors downward"""
+    if is_bottom_pressed():
+        motor_stop()
+        print("🧱 Bottom limit reached - stop DOWN motion.")
+        return
+    GPIO.output(In1A, GPIO.HIGH)
+    GPIO.output(In1B, GPIO.LOW)
+    pwm1.ChangeDutyCycle(speed)
+    GPIO.output(In2A, GPIO.HIGH)
+    GPIO.output(In2B, GPIO.LOW)
+    pwm2.ChangeDutyCycle(speed)
+
+def motor_stop():
+    """Stop both motors"""
+    GPIO.output(In1A, GPIO.LOW)
+    GPIO.output(In1B, GPIO.LOW)
+    GPIO.output(In2A, GPIO.LOW)
+    GPIO.output(In2B, GPIO.LOW)
+    pwm1.ChangeDutyCycle(0)
+    pwm2.ChangeDutyCycle(0)
+
+# ========================================
+# Pose Detection Setup
+# ========================================
+mp_pose = mp.solutions.pose
+pose = mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5)
+cap = cv2.VideoCapture(0)
+
+# ========================================
+# Parameters
+# ========================================
+baseline_distance = None
+THRESHOLD_RATIO = 0.8
+RECOVER_RATIO = 0.95
+MOTOR_SPEED = 50
+MAX_UP_TIME = 3.0  # safety limit for upward movement (sec)
+
+# ========================================
+# Step 1: FORCED Initialization
+# ========================================
+print("📷 Initializing system...")
+print("🔧 Phase 1: Moving UP to clear any existing bottom position.")
+
+# 무조건 위로 2초간 이동 (스위치 상태 무관)
+start_time = time()
+while time() - start_time < 2.0:
+    if is_top_pressed():
+        print("🧱 Top switch detected during init - stopping.")
+        break
+    motor_up(MOTOR_SPEED)
+    sleep(0.1)
+
+motor_stop()
+print("✅ Initial UP movement complete.")
+sleep(0.5)
+
+print("🔧 Phase 2: Moving DOWN to find bottom switch.")
+
+# 이제 하강하여 하단 스위치 찾기
+init_start = time()
+while not is_bottom_pressed():
+    if time() - init_start > 10.0:  # 10초 타임아웃
+        print("⚠️ Bottom switch not found in 10 seconds. Check hardware!")
+        motor_stop()
+        raise RuntimeError("Initialization failed - bottom switch not detected")
+    
+    motor_down(MOTOR_SPEED)
+    sleep(0.05)
+
+motor_stop()
+print("✅ Bottom position found. Motors at starting position.")
+sleep(1)
+
+# ========================================
+# Step 2: Baseline Posture Capture with Countdown
+# ========================================
+print("\n" + "="*50)
+print("📸 BASELINE CALIBRATION")
+print("="*50)
+print("👤 Please sit in CORRECT, UPRIGHT posture.")
+print("📏 Keep your back straight and head up.")
+print("")
+
+# 3초 카운트다운
+for i in range(3, 0, -1):
+    print(f"⏱️  Capturing baseline in {i} seconds...")
+    sleep(1)
+
+print("📸 Capturing NOW...")
+
+# Baseline 캡처 (최대 5초 시도)
+baseline_captured = False
+capture_start = time()
+
+while not baseline_captured:
+    if time() - capture_start > 5.0:
+        print("❌ Failed to detect pose. Please ensure you're visible to camera.")
+        cap.release()
+        motor_stop()
+        pwm1.stop()
+        pwm2.stop()
+        GPIO.cleanup()
+        raise RuntimeError("Baseline capture failed - no pose detected")
+    
+    ret, frame = cap.read()
+    if not ret:
+        print("❌ Camera error.")
+        sleep(0.1)
+        continue
+
+    frame = cv2.flip(frame, 1)
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    results = pose.process(rgb)
+
+    if results.pose_landmarks:
+        lm = results.pose_landmarks.landmark
+        nose = lm[mp_pose.PoseLandmark.NOSE]
+        left_shoulder = lm[mp_pose.PoseLandmark.LEFT_SHOULDER]
+        right_shoulder = lm[mp_pose.PoseLandmark.RIGHT_SHOULDER]
+        shoulder_center_y = (left_shoulder.y + right_shoulder.y) / 2.0
+        distance = shoulder_center_y - nose.y
+        
+        if distance > 0:  # 유효성 검사
+            baseline_distance = distance
+            baseline_captured = True
+            print(f"✅ Baseline captured! (distance: {baseline_distance:.4f})")
+            print("🎯 Monitoring started. Keep good posture!")
+            sleep(1)
+        else:
+            print("⚠️ Invalid pose detected, retrying...")
+            sleep(0.1)
+
+# ========================================
+# Step 3: Continuous Monitoring & Correction
+# ========================================
+print("\n" + "="*50)
+print("🔍 ACTIVE POSTURE MONITORING")
+print("="*50)
+
+try:
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            print("❌ Camera error.")
+            break
+
+        frame = cv2.flip(frame, 1)
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = pose.process(rgb)
+
+        # If landmarks disappear → stop motors safely
+        if not results.pose_landmarks:
+            print("⚠️ Pose lost. Stopping motors.")
+            motor_stop()
+            sleep(0.2)
+            continue
+
+        lm = results.pose_landmarks.landmark
+        nose = lm[mp_pose.PoseLandmark.NOSE]
+        left_shoulder = lm[mp_pose.PoseLandmark.LEFT_SHOULDER]
+        right_shoulder = lm[mp_pose.PoseLandmark.RIGHT_SHOULDER]
+        shoulder_center_y = (left_shoulder.y + right_shoulder.y) / 2.0
+        distance = shoulder_center_y - nose.y
+
+        ratio = distance / baseline_distance if baseline_distance else 1.0
+        print(f"📏 ratio = {ratio:.2f}", end='')
+
+        # Turtle Neck Detected
+        if ratio < THRESHOLD_RATIO:
+            print(" → 🐢 Turtle neck! Correcting...")
+            correction_start = time()
+            
+            while ratio < THRESHOLD_RATIO:
+                # Safety checks
+                if is_top_pressed():
+                    print("\n🧱 Top switch pressed - stopping.")
+                    motor_stop()
+                    break
+                
+                if time() - correction_start > MAX_UP_TIME:
+                    print(f"\n⏰ Max correction time ({MAX_UP_TIME}s) reached - stopping.")
+                    motor_stop()
+                    break
+
+                motor_up(MOTOR_SPEED)
+                sleep(0.1)
+
+                # Update ratio dynamically
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                    
+                frame = cv2.flip(frame, 1)
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                results = pose.process(rgb)
+                
+                if not results.pose_landmarks:
+                    print("\n⚠️ Pose lost during correction - stopping.")
+                    motor_stop()
+                    break
+                    
+                lm = results.pose_landmarks.landmark
+                nose = lm[mp_pose.PoseLandmark.NOSE]
+                left_shoulder = lm[mp_pose.PoseLandmark.LEFT_SHOULDER]
+                right_shoulder = lm[mp_pose.PoseLandmark.RIGHT_SHOULDER]
+                shoulder_center_y = (left_shoulder.y + right_shoulder.y) / 2.0
+                distance = shoulder_center_y - nose.y
+                ratio = distance / baseline_distance if baseline_distance else 1.0
+                print(f"📏 ratio = {ratio:.2f} (correcting...)", end='\r')
+
+            motor_stop()
+            print("\n✅ Posture corrected or limit reached.")
+
+        else:
+            print(" → ✅ Good posture")
+            motor_stop()
+
+        sleep(0.2)
+
+except KeyboardInterrupt:
+    print("\n🛑 Interrupted by user.")
+
+finally:
+    cap.release()
+    motor_stop()
+    pwm1.stop()
+    pwm2.stop()
+    GPIO.cleanup()
+    print("✅ Program terminated safely.")
