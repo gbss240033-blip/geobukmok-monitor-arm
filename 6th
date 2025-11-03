@@ -245,4 +245,9 @@ except KeyboardInterrupt:
     print("🛑 Interrupted by user.")
 
 finally:
-   
+    cap.release()
+    motor_stop('both')
+    pwm1.stop()
+    pwm2.stop()
+    GPIO.cleanup()
+    print("Program terminated safely.")
