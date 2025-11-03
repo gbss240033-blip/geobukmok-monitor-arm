@@ -1,0 +1,186 @@
+import cv2
+import mediapipe as mp
+import RPi.GPIO as GPIO
+from time import sleep, time
+
+# ----------------------------
+# Motor Setup
+# ----------------------------
+GPIO.setmode(GPIO.BCM)
+GPIO.setwarnings(False)
+
+# 모터 2개 핀
+# 하단 모터
+Ena1, In1A, In1B = 2, 3, 4
+# 상단 모터
+Ena2, In2A, In2B = 17, 22, 27
+
+for pin in [Ena1, In1A, In1B, Ena2, In2A, In2B]:
+    GPIO.setup(pin, GPIO.OUT)
+
+pwm1 = GPIO.PWM(Ena1, 100)
+pwm1.start(0)
+pwm2 = GPIO.PWM(Ena2, 100)
+pwm2.start(0)
+
+# ----------------------------
+# Limit Switch Setup
+# ----------------------------
+SWITCH_BOTTOM = 5  # 하단
+SWITCH_TOP = 6     # 상단
+
+GPIO.setup(SWITCH_BOTTOM, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+GPIO.setup(SWITCH_TOP, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+
+def is_bottom_pressed():
+    return GPIO.input(SWITCH_BOTTOM) == GPIO.HIGH
+
+def is_top_pressed():
+    return GPIO.input(SWITCH_TOP) == GPIO.HIGH
+
+# ----------------------------
+# Motor Control
+# ----------------------------
+def motor_forward(pwm, InA, InB, speed=50, duration=1):
+    """모터 올리기"""
+    GPIO.output(InA, GPIO.LOW)
+    GPIO.output(InB, GPIO.HIGH)
+    pwm.ChangeDutyCycle(speed)
+    start = time()
+    while time() - start < duration:
+        sleep(0.01)
+    pwm.ChangeDutyCycle(0)
+    GPIO.output(InA, GPIO.LOW)
+    GPIO.output(InB, GPIO.LOW)
+
+def motor_backward(pwm, InA, InB, speed=50, duration=1):
+    """모터 내리기"""
+    GPIO.output(InA, GPIO.HIGH)
+    GPIO.output(InB, GPIO.LOW)
+    pwm.ChangeDutyCycle(speed)
+    start = time()
+    while time() - start < duration:
+        sleep(0.01)
+    pwm.ChangeDutyCycle(0)
+    GPIO.output(InA, GPIO.LOW)
+    GPIO.output(InB, GPIO.LOW)
+
+# ----------------------------
+# Pose Detection Setup
+# ----------------------------
+mp_pose = mp.solutions.pose
+pose = mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5)
+cap = cv2.VideoCapture(0)
+
+# ----------------------------
+# Parameters
+# ----------------------------
+baseline_distance = None
+THRESHOLD_RATIO = 0.8
+RECOVER_RATIO = 0.95
+BAD_STABLE_THRESHOLD = 5
+GOOD_STABLE_THRESHOLD = 15
+
+MAX_MOVES = 5
+current_position = 0
+MOTOR_STEP_DURATION = 1.0
+MOTOR_SPEED = 50
+bad_count = 0
+good_count = 0
+last_move_time = 0
+MIN_INTERVAL_BETWEEN_MOVES = 0.8
+
+# ----------------------------
+# Step 1: Initialization
+# ----------------------------
+print("📷 Initializing system...")
+
+# 하단 모터 초기화: 스위치 눌림 해제용
+if is_bottom_pressed():
+    print("🔧 Bottom switch is pressed. Moving up slightly to release...")
+    motor_forward(pwm1, In1A, In1B, speed=50, duration=1.0)
+    sleep(0.2)
+
+print("🔧 Moving down to baseline position...")
+motor_backward(pwm1, In1A, In1B, speed=40, duration=1.5)  # 시간 기반 내려가기
+print("✅ Baseline position set.")
+sleep(0.5)
+
+print("📷 Starting camera feed. Sit upright to calibrate baseline posture.")
+
+# ----------------------------
+# Step 2: Pose Detection Loop
+# ----------------------------
+try:
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            print("❌ Unable to read camera frame.")
+            break
+
+        frame = cv2.flip(frame, 1)
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = pose.process(rgb_frame)
+
+        print(f"[Switch Status] Bottom: {'🔴 Pressed' if is_bottom_pressed() else '⚪ Released'} | Top: {'🔴 Pressed' if is_top_pressed() else '⚪ Released'}")
+
+        if results.pose_landmarks:
+            landmarks = results.pose_landmarks.landmark
+            nose = landmarks[mp_pose.PoseLandmark.NOSE]
+            left_shoulder = landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER]
+            right_shoulder = landmarks[mp_pose.PoseLandmark.RIGHT_SHOULDER]
+
+            shoulder_center_y = (left_shoulder.y + right_shoulder.y) / 2.0
+            distance = shoulder_center_y - nose.y
+
+            # 최초 baseline 인식
+            if baseline_distance is None:
+                baseline_distance = distance
+                print("✅ Posture baseline saved!")
+                continue
+
+            ratio = distance / baseline_distance if baseline_distance != 0 else 1.0
+
+            # BAD posture
+            if ratio < THRESHOLD_RATIO:
+                bad_count += 1
+                good_count = 0
+                if bad_count >= BAD_STABLE_THRESHOLD:
+                    now = time()
+                    if current_position < MAX_MOVES and (now - last_move_time) > MIN_INTERVAL_BETWEEN_MOVES:
+                        print(f"🟢 Moving monitor arm UP")
+                        motor_forward(pwm1, In1A, In1B, speed=MOTOR_SPEED, duration=MOTOR_STEP_DURATION)
+                        current_position += 1
+                        last_move_time = time()
+                    bad_count = 0
+
+            # GOOD posture
+            elif ratio >= RECOVER_RATIO:
+                good_count += 1
+                bad_count = 0
+                if good_count >= GOOD_STABLE_THRESHOLD:
+                    now = time()
+                    if current_position > 0 and (now - last_move_time) > MIN_INTERVAL_BETWEEN_MOVES:
+                        print(f"🔵 Moving monitor arm DOWN")
+                        motor_backward(pwm1, In1A, In1B, speed=MOTOR_SPEED, duration=MOTOR_STEP_DURATION)
+                        current_position -= 1
+                        last_move_time = time()
+                    good_count = 0
+            else:
+                bad_count = 0
+                good_count = 0
+        else:
+            bad_count = 0
+            good_count = 0
+
+        sleep(0.2)
+
+except KeyboardInterrupt:
+    print("🛑 Interrupted by user.")
+
+finally:
+    cap.release()
+    pwm1.stop()
+    pwm2.stop()
+    GPIO.cleanup()
+    print("Program terminated safely.")
