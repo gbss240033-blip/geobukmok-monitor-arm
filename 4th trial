@@ -93,19 +93,19 @@ motor_state_upper = 'stop'
 motor_state_lower = 'stop'
 
 # ----------------------------
-# Step 0: Initialization - 스위치 눌릴 때까지 모터 UP
+# Step 0: Initialization - 하단 스위치가 눌릴 때까지 DOWN
 # ----------------------------
-print("📷 Initializing system... Moving motors UP to find bottom switch.")
+print("📷 Initializing system... Moving motors DOWN to find bottom switch.")
 
 # Upper motor
-motor_set_state('upper', 'up', MOTOR_SPEED)
+motor_set_state('upper', 'down', MOTOR_SPEED)
 while not is_bottom_pressed():
     sleep(0.05)
 motor_set_state('upper', 'stop')
 print("✅ Upper motor bottom switch pressed.")
 
 # Lower motor
-motor_set_state('lower', 'up', MOTOR_SPEED)
+motor_set_state('lower', 'down', MOTOR_SPEED)
 while not is_bottom_pressed():
     sleep(0.05)
 motor_set_state('lower', 'stop')
@@ -165,12 +165,14 @@ try:
 
             # 거북목 보정: ratio < 0.95 -> UP, ratio >= 0.95 -> STOP
             if ratio < RECOVER_RATIO:
+                # Upper motor
                 if upper_up_time < MAX_UP_TIME and not is_top_pressed():
                     motor_state_upper = 'up'
                     upper_up_time += LOOP_DELAY
                 else:
                     motor_state_upper = 'stop'
 
+                # Lower motor
                 if lower_up_time < MAX_UP_TIME and not is_top_pressed():
                     motor_state_lower = 'up'
                     lower_up_time += LOOP_DELAY
