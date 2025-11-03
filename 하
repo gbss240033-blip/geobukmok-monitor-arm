@@ -1,0 +1,64 @@
+import RPi.GPIO as GPIO
+from time import sleep
+
+# ----------------------------
+# Motor Setup (하부 모터)
+# ----------------------------
+GPIO.setmode(GPIO.BCM)
+GPIO.setwarnings(False)
+
+Ena, In1, In2 = 2, 3, 4
+GPIO.setup(Ena, GPIO.OUT)
+GPIO.setup(In1, GPIO.OUT)
+GPIO.setup(In2, GPIO.OUT)
+
+pwm = GPIO.PWM(Ena, 100)  # 100Hz PWM
+pwm.start(0)
+
+# ----------------------------
+# Limit Switch Setup
+# ----------------------------
+SWITCH_TOP = 6  # 상단 리미트 스위치
+GPIO.setup(SWITCH_TOP, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+
+def is_top_pressed():
+    return GPIO.input(SWITCH_TOP) == GPIO.HIGH  # 눌렸으면 HIGH
+
+# ----------------------------
+# Motor Control
+# ----------------------------
+def motor_forward(speed=50, duration=0.1):
+    """하부 모터 올리기 (UP)"""
+    if is_top_pressed():
+        print("🚫 Top limit reached — stopping motor.")
+        motor_stop()
+        return
+    GPIO.output(In1, GPIO.LOW)
+    GPIO.output(In2, GPIO.HIGH)
+    pwm.ChangeDutyCycle(speed)
+    sleep(duration)
+    motor_stop()
+
+def motor_stop():
+    GPIO.output(In1, GPIO.LOW)
+    GPIO.output(In2, GPIO.LOW)
+    pwm.ChangeDutyCycle(0)
+
+# ----------------------------
+# Main: 모터 올리기 반복
+# ----------------------------
+try:
+    print("🔼 하부 모니터 암 올리는 중...")
+    while not is_top_pressed():
+        motor_forward(speed=50, duration=0.2)  # 0.2초씩 이동 반복
+        sleep(0.1)
+    print("✅ 상단 리미트 도달 — 모터 멈춤")
+
+except KeyboardInterrupt:
+    print("🛑 사용자 중단")
+
+finally:
+    motor_stop()
+    pwm.stop()
+    GPIO.cleanup()
+    print("프로그램 종료")
