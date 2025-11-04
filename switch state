@@ -1,0 +1,16 @@
+import RPi.GPIO as GPIO
+from time import sleep
+
+GPIO.setmode(GPIO.BCM)
+GPIO.setwarnings(False)
+
+SWITCH_UPPER = 5
+GPIO.setup(SWITCH_UPPER, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+
+try:
+    while True:
+        state = GPIO.input(SWITCH_UPPER)
+        print("SWITCH STATE:", state)
+        sleep(0.1)
+except KeyboardInterrupt:
+    GPIO.cleanup()
