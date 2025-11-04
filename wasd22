@@ -1,0 +1,181 @@
+import RPi.GPIO as GPIO
+import cv2
+import mediapipe as mp
+import numpy as np
+import time
+import keyboard
+
+# ========================================
+# GPIO Setup
+# ========================================
+GPIO.setmode(GPIO.BCM)
+GPIO.setwarnings(False)
+
+# --- Upper Motor ---
+Ena1, In1A, In1B = 2, 3, 4
+GPIO.setup(Ena1, GPIO.OUT)
+GPIO.setup(In1A, GPIO.OUT)
+GPIO.setup(In1B, GPIO.OUT)
+pwm1 = GPIO.PWM(Ena1, 100)
+pwm1.start(0)
+
+# --- Lower Motor ---
+EnB, In2A, In2B = 17, 22, 27
+GPIO.setup(EnB, GPIO.OUT)
+GPIO.setup(In2A, GPIO.OUT)
+GPIO.setup(In2B, GPIO.OUT)
+pwm2 = GPIO.PWM(EnB, 100)
+pwm2.start(0)
+
+# --- Limit Switches for Initial Calibration ---
+upper_switch = 6
+lower_switch = 5
+GPIO.setup(upper_switch, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
+GPIO.setup(lower_switch, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
+
+# ========================================
+# Motor Control Functions
+# ========================================
+def stop_upper():
+    GPIO.output(In1A, GPIO.LOW)
+    GPIO.output(In1B, GPIO.LOW)
+    pwm1.ChangeDutyCycle(0)
+
+def stop_lower():
+    GPIO.output(In2A, GPIO.LOW)
+    GPIO.output(In2B, GPIO.LOW)
+    pwm2.ChangeDutyCycle(0)
+
+def move_upper_up(speed=70):
+    GPIO.output(In1A, GPIO.HIGH)
+    GPIO.output(In1B, GPIO.LOW)
+    pwm1.ChangeDutyCycle(speed)
+
+def move_upper_down(speed=70):
+    GPIO.output(In1A, GPIO.LOW)
+    GPIO.output(In1B, GPIO.HIGH)
+    pwm1.ChangeDutyCycle(speed)
+
+def move_lower_up(speed=70):
+    GPIO.output(In2A, GPIO.HIGH)
+    GPIO.output(In2B, GPIO.LOW)
+    pwm2.ChangeDutyCycle(speed)
+
+def move_lower_down(speed=70):
+    GPIO.output(In2A, GPIO.LOW)
+    GPIO.output(In2B, GPIO.HIGH)
+    pwm2.ChangeDutyCycle(speed)
+
+# ========================================
+# MediaPipe Setup
+# ========================================
+mp_face = mp.solutions.face_mesh
+mp_draw = mp.solutions.drawing_utils
+face_mesh = mp_face.FaceMesh(max_num_faces=1, refine_landmarks=True, min_detection_confidence=0.6)
+cap = cv2.VideoCapture(0)
+
+baseline_nose = None
+
+print("🟢 Waiting for initial calibration (press both limit switches)")
+print("After calibration, WASD / arrow keys can control monitor manually")
+print("Press 'c' to calibrate baseline posture after switches triggered")
+print("Press 'q' to quit")
+
+# ========================================
+# Main Loop
+# ========================================
+try:
+    calibrated = False
+
+    while True:
+        # --- Step 1: Initial Calibration using Limit Switches ---
+        if not calibrated:
+            print("⏳ Press both upper and lower switches to calibrate baseline...")
+            if GPIO.input(upper_switch) == 1 and GPIO.input(lower_switch) == 1:
+                print("✅ Switches pressed. Baseline ready for posture calibration.")
+                calibrated = True
+            time.sleep(0.1)
+            continue
+
+        # --- Step 2: Camera Capture + MediaPipe ---
+        success, img = cap.read()
+        if not success:
+            break
+
+        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        results = face_mesh.process(img_rgb)
+        h, w, _ = img.shape
+
+        if results.multi_face_landmarks:
+            for face_landmarks in results.multi_face_landmarks:
+                nose = face_landmarks.landmark[1]
+                right_ear = face_landmarks.landmark[234]
+                left_ear = face_landmarks.landmark[454]
+
+                nose_pt = np.array([nose.x * w, nose.y * h])
+                ear_mid = np.array([(right_ear.x + left_ear.x) * w / 2,
+                                    (right_ear.y + left_ear.y) * h / 2])
+
+                # --- Forward / Downward Shift 계산 ---
+                if baseline_nose is not None:
+                    forward_shift = nose_pt[0] - baseline_nose[0]
+                    downward_shift = nose_pt[1] - baseline_nose[1]
+                    forward_ratio = forward_shift / w * 100
+                    downward_ratio = downward_shift / h * 100
+
+                    cv2.putText(img, f"Forward: {forward_ratio:+.2f}%", (30, 60),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,255,0), 2)
+                    cv2.putText(img, f"Downward: {downward_ratio:+.2f}%", (30, 90),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,255,0), 2)
+
+                    # --- 경고 메시지 ---
+                    if forward_ratio > 5:
+                        cv2.putText(img, "⚠️ Forward Head!", (30, 120),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,0,255), 2)
+                    if downward_ratio > 5:
+                        cv2.putText(img, "⚠️ Looking Down!", (30, 150),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,0,255), 2)
+
+            mp_draw.draw_landmarks(img, face_landmarks, mp_face.FACEMESH_CONTOURS,
+                                   mp_draw.DrawingSpec(color=(0,255,255), thickness=1, circle_radius=1),
+                                   mp_draw.DrawingSpec(color=(255,0,255), thickness=1))
+
+        # --- Step 3: WASD / Arrow Key Manual Motor Control ---
+        if keyboard.is_pressed('w'):
+            move_upper_up()
+        elif keyboard.is_pressed('s'):
+            move_upper_down()
+        else:
+            stop_upper()
+
+        if keyboard.is_pressed('up'):
+            move_lower_up()
+        elif keyboard.is_pressed('down'):
+            move_lower_down()
+        else:
+            stop_lower()
+
+        # --- Step 4: Exit or Calibrate Baseline Posture ---
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('c') and results.multi_face_landmarks:
+            baseline_nose = nose_pt.copy()
+            print("✅ Baseline posture calibrated!")
+        elif key == ord('q') or keyboard.is_pressed('q'):
+            print("🛑 Program terminated by user")
+            break
+
+        cv2.imshow("Turtle Neck Detector + Manual Monitor Control", img)
+        time.sleep(0.05)
+
+except KeyboardInterrupt:
+    print("\n🛑 Program stopped by user")
+
+finally:
+    stop_upper()
+    stop_lower()
+    pwm1.stop()
+    pwm2.stop()
+    GPIO.cleanup()
+    cap.release()
+    cv2.destroyAllWindows()
+    print("GPIO cleaned up. Safe shutdown complete.")
