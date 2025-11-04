@@ -1,0 +1,188 @@
+import RPi.GPIO as GPIO
+import cv2
+import mediapipe as mp
+import numpy as np
+import time
+
+# ========================================
+# GPIO Setup
+# ========================================
+GPIO.setmode(GPIO.BCM)
+GPIO.setwarnings(False)
+
+# --- Upper Motor ---
+Ena1, In1A, In1B = 2, 3, 4
+GPIO.setup(Ena1, GPIO.OUT)
+GPIO.setup(In1A, GPIO.OUT)
+GPIO.setup(In1B, GPIO.OUT)
+pwm1 = GPIO.PWM(Ena1, 100)
+pwm1.start(0)
+
+# --- Lower Motor ---
+EnB, In2A, In2B = 17, 22, 27
+GPIO.setup(EnB, GPIO.OUT)
+GPIO.setup(In2A, GPIO.OUT)
+GPIO.setup(In2B, GPIO.OUT)
+pwm2 = GPIO.PWM(EnB, 100)
+pwm2.start(0)
+
+# --- Limit Switches ---
+upper_switch = 10
+lower_switch = 9
+GPIO.setup(upper_switch, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
+GPIO.setup(lower_switch, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
+
+# ========================================
+# Motor Control Functions
+# ========================================
+def stop_upper():
+    GPIO.output(In1A, GPIO.LOW)
+    GPIO.output(In1B, GPIO.LOW)
+    pwm1.ChangeDutyCycle(0)
+
+def stop_lower():
+    GPIO.output(In2A, GPIO.LOW)
+    GPIO.output(In2B, GPIO.LOW)
+    pwm2.ChangeDutyCycle(0)
+
+def move_upper_up(speed=70):
+    GPIO.output(In1A, GPIO.HIGH)
+    GPIO.output(In1B, GPIO.LOW)
+    pwm1.ChangeDutyCycle(speed)
+
+def move_upper_down(speed=70):
+    GPIO.output(In1A, GPIO.LOW)
+    GPIO.output(In1B, GPIO.HIGH)
+    pwm1.ChangeDutyCycle(speed)
+
+def move_lower_up(speed=70):
+    GPIO.output(In2A, GPIO.HIGH)
+    GPIO.output(In2B, GPIO.LOW)
+    pwm2.ChangeDutyCycle(speed)
+
+def move_lower_down(speed=70):
+    GPIO.output(In2A, GPIO.LOW)
+    GPIO.output(In2B, GPIO.HIGH)
+    pwm2.ChangeDutyCycle(speed)
+
+# ========================================
+# Wait for both limit switches pressed
+# ========================================
+print("🟡 Waiting for both limit switches to be pressed...")
+while not (GPIO.input(upper_switch) == 1 and GPIO.input(lower_switch) == 1):
+    print(f"Upper switch: {GPIO.input(upper_switch)}, Lower switch: {GPIO.input(lower_switch)}")
+    time.sleep(0.3)
+
+print("✅ Both limit switches pressed — entering turtle-neck detection mode.")
+
+# ========================================
+# MediaPipe FaceMesh Setup
+# ========================================
+mp_face = mp.solutions.face_mesh
+mp_draw = mp.solutions.drawing_utils
+
+face_mesh = mp_face.FaceMesh(max_num_faces=1, refine_landmarks=True, min_detection_confidence=0.6)
+cap = cv2.VideoCapture(0)
+
+baseline_nose = None
+is_turtle = False
+turtle_start_time = None
+MAX_UP_DURATION = 5  # 상한 리미트 스위치 없으므로 5초 이상 움직이면 자동 정지
+
+print("Press 'c' to calibrate neutral posture.")
+print("Press 'q' to quit.")
+
+# ========================================
+# Main Loop
+# ========================================
+try:
+    while cap.isOpened():
+        success, img = cap.read()
+        if not success:
+            break
+
+        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        results = face_mesh.process(img_rgb)
+        h, w, _ = img.shape
+
+        if results.multi_face_landmarks:
+            for face_landmarks in results.multi_face_landmarks:
+                nose = face_landmarks.landmark[1]
+                right_ear = face_landmarks.landmark[234]
+                left_ear = face_landmarks.landmark[454]
+
+                nose_pt = np.array([nose.x * w, nose.y * h])
+                ear_mid = np.array([(right_ear.x + left_ear.x) * w / 2,
+                                    (right_ear.y + left_ear.y) * h / 2])
+
+                if baseline_nose is not None:
+                    forward_shift = nose_pt[0] - baseline_nose[0]
+                    downward_shift = nose_pt[1] - baseline_nose[1]
+                    forward_ratio = forward_shift / w * 100
+                    downward_ratio = downward_shift / h * 100
+
+                    cv2.putText(img, f"Forward: {forward_ratio:+.2f}%", (30, 60),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,255,0), 2)
+                    cv2.putText(img, f"Downward: {downward_ratio:+.2f}%", (30, 90),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,255,0), 2)
+
+                    # ----------------------------
+                    #  거북목 감지 로직
+                    # ----------------------------
+                    if forward_ratio > 5 or downward_ratio > 5:
+                        if not is_turtle:
+                            if turtle_start_time is None:
+                                turtle_start_time = time.time()
+                            elif time.time() - turtle_start_time >= 3:
+                                print("⚠️ Turtle neck detected for over 3 seconds! Adjusting monitor up...")
+                                is_turtle = True
+                                up_start = time.time()
+
+                                # 모니터 상승 (상하부 모터 모두)
+                                move_upper_up(70)
+                                move_lower_up(70)
+                        else:
+                            # 거북목 지속 중이면 계속 상승 (최대 5초)
+                            if time.time() - up_start > MAX_UP_DURATION:
+                                stop_upper()
+                                stop_lower()
+                                print("🛑 Upper limit time reached, stop moving up.")
+                    else:
+                        # 거북목 해소 시 복귀
+                        if is_turtle:
+                            print("✅ Turtle neck resolved — lowering to original position.")
+                            move_upper_down(70)
+                            move_lower_down(70)
+                            time.sleep(2.5)  # 충분히 내려가는 시간
+                            stop_upper()
+                            stop_lower()
+                            is_turtle = False
+                            turtle_start_time = None
+                        else:
+                            turtle_start_time = None
+
+            mp_draw.draw_landmarks(img, face_landmarks, mp_face.FACEMESH_CONTOURS,
+                                   mp_draw.DrawingSpec(color=(0,255,255), thickness=1, circle_radius=1),
+                                   mp_draw.DrawingSpec(color=(255,0,255), thickness=1))
+
+        cv2.imshow("Turtle Neck Auto Monitor", img)
+        key = cv2.waitKey(1) & 0xFF
+
+        if key == ord('c'):
+            if results.multi_face_landmarks:
+                baseline_nose = nose_pt.copy()
+                print("✅ Calibrated!")
+        elif key == ord('q'):
+            break
+
+except KeyboardInterrupt:
+    print("\n🛑 Program stopped by user")
+
+finally:
+    stop_upper()
+    stop_lower()
+    pwm1.stop()
+    pwm2.stop()
+    GPIO.cleanup()
+    cap.release()
+    cv2.destroyAllWindows()
