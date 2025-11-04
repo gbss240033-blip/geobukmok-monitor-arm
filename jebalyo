@@ -1,0 +1,88 @@
+import RPi.GPIO as GPIO
+import time
+
+# ----------------------------
+# GPIO Setup
+# ----------------------------
+GPIO.setmode(GPIO.BCM)
+GPIO.setwarnings(False)
+
+# --- Upper Motor ---
+Ena1, In1A, In1B = 2, 3, 4
+GPIO.setup(Ena1, GPIO.OUT)
+GPIO.setup(In1A, GPIO.OUT)
+GPIO.setup(In1B, GPIO.OUT)
+pwm1 = GPIO.PWM(Ena1, 100)
+pwm1.start(0)
+
+# --- Lower Motor ---
+EnB, In2A, In2B = 17, 22, 27
+GPIO.setup(EnB, GPIO.OUT)
+GPIO.setup(In2A, GPIO.OUT)
+GPIO.setup(In2B, GPIO.OUT)
+pwm2 = GPIO.PWM(EnB, 100)
+pwm2.start(0)
+
+# --- Limit Switches ---
+upper_switch = 10
+lower_switch = 9
+GPIO.setup(upper_switch, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
+GPIO.setup(lower_switch, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
+
+# ----------------------------
+# Motor Control Functions
+# ----------------------------
+def stop_upper():
+    GPIO.output(In1A, GPIO.LOW)
+    GPIO.output(In1B, GPIO.LOW)
+    pwm1.ChangeDutyCycle(0)
+    print("🛑 Upper motor stopped")
+
+def stop_lower():
+    GPIO.output(In2A, GPIO.LOW)
+    GPIO.output(In2B, GPIO.LOW)
+    pwm2.ChangeDutyCycle(0)
+    print("🛑 Lower motor stopped")
+
+def move_upper_down(speed=70):
+    GPIO.output(In1A, GPIO.LOW)
+    GPIO.output(In1B, GPIO.HIGH)
+    pwm1.ChangeDutyCycle(speed)
+    print("⬇️ Upper motor moving down")
+
+def move_lower_down(speed=70):
+    GPIO.output(In2A, GPIO.LOW)
+    GPIO.output(In2B, GPIO.HIGH)
+    pwm2.ChangeDutyCycle(speed)
+    print("⬇️ Lower motor moving down")
+
+# ----------------------------
+# Main Control Loop
+# ----------------------------
+try:
+    while True:
+        # Upper motor down until switch pressed
+        if GPIO.input(upper_switch) == 1:
+            stop_upper()
+        else:
+            move_upper_down()
+
+        # Lower motor down until switch pressed
+        if GPIO.input(lower_switch) == 1:
+            stop_lower()
+        else:
+            move_lower_down()
+
+        # Debug 출력
+        print(f"Upper switch: {GPIO.input(upper_switch)}, Lower switch: {GPIO.input(lower_switch)}")
+        time.sleep(0.05)
+
+except KeyboardInterrupt:
+    print("\nProgram stopped by user")
+
+finally:
+    stop_upper()
+    stop_lower()
+    pwm1.stop()
+    pwm2.stop()
+    GPIO.cleanup()
