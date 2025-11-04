@@ -1,0 +1,100 @@
+import RPi.GPIO as GPIO
+import time
+import keyboard  # pip install keyboard
+
+# ==============================
+# GPIO Setup
+# ==============================
+GPIO.setmode(GPIO.BCM)
+GPIO.setwarnings(False)
+
+# --- Upper Motor ---
+Ena1, In1A, In1B = 2, 3, 4
+GPIO.setup(Ena1, GPIO.OUT)
+GPIO.setup(In1A, GPIO.OUT)
+GPIO.setup(In1B, GPIO.OUT)
+pwm1 = GPIO.PWM(Ena1, 100)
+pwm1.start(0)
+
+# --- Lower Motor ---
+EnB, In2A, In2B = 17, 22, 27
+GPIO.setup(EnB, GPIO.OUT)
+GPIO.setup(In2A, GPIO.OUT)
+GPIO.setup(In2B, GPIO.OUT)
+pwm2 = GPIO.PWM(EnB, 100)
+pwm2.start(0)
+
+# ==============================
+# Motor Control Functions
+# ==============================
+def stop_upper():
+    GPIO.output(In1A, GPIO.LOW)
+    GPIO.output(In1B, GPIO.LOW)
+    pwm1.ChangeDutyCycle(0)
+
+def stop_lower():
+    GPIO.output(In2A, GPIO.LOW)
+    GPIO.output(In2B, GPIO.LOW)
+    pwm2.ChangeDutyCycle(0)
+
+def move_upper_up(speed=70):
+    GPIO.output(In1A, GPIO.HIGH)
+    GPIO.output(In1B, GPIO.LOW)
+    pwm1.ChangeDutyCycle(speed)
+
+def move_upper_down(speed=70):
+    GPIO.output(In1A, GPIO.LOW)
+    GPIO.output(In1B, GPIO.HIGH)
+    pwm1.ChangeDutyCycle(speed)
+
+def move_lower_up(speed=70):
+    GPIO.output(In2A, GPIO.HIGH)
+    GPIO.output(In2B, GPIO.LOW)
+    pwm2.ChangeDutyCycle(speed)
+
+def move_lower_down(speed=70):
+    GPIO.output(In2A, GPIO.LOW)
+    GPIO.output(In2B, GPIO.HIGH)
+    pwm2.ChangeDutyCycle(speed)
+
+# ==============================
+# Main Loop: WASD + Arrow Keys
+# ==============================
+print("Control the monitor arm with WASD (upper motor) and arrow keys (lower motor).")
+print("Press 'q' to quit.")
+
+try:
+    while True:
+        # --- Upper Motor ---
+        if keyboard.is_pressed('w'):
+            move_upper_up()
+        elif keyboard.is_pressed('s'):
+            move_upper_down()
+        else:
+            stop_upper()
+
+        # --- Lower Motor ---
+        if keyboard.is_pressed('up'):
+            move_lower_up()
+        elif keyboard.is_pressed('down'):
+            move_lower_down()
+        else:
+            stop_lower()
+
+        # --- Exit ---
+        if keyboard.is_pressed('q'):
+            print("Exiting...")
+            break
+
+        time.sleep(0.05)  # CPU 부담 완화
+
+except KeyboardInterrupt:
+    print("\nInterrupted by user.")
+
+finally:
+    stop_upper()
+    stop_lower()
+    pwm1.stop()
+    pwm2.stop()
+    GPIO.cleanup()
+    print("GPIO cleaned up. Program terminated safely.")
