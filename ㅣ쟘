@@ -1,0 +1,117 @@
+import RPi.GPIO as GPIO
+from time import sleep, time
+
+# ========================================
+# GPIO Setup
+# ========================================
+GPIO.setmode(GPIO.BCM)
+GPIO.setwarnings(False)
+
+# --- Upper Motor ---
+Ena1, In1A, In1B = 2, 3, 4
+GPIO.setup(Ena1, GPIO.OUT)
+GPIO.setup(In1A, GPIO.OUT)
+GPIO.setup(In1B, GPIO.OUT)
+pwm1 = GPIO.PWM(Ena1, 100)
+pwm1.start(0)
+
+# --- Lower Motor ---
+EnB, In2A, In2B = 17, 22, 27
+GPIO.setup(EnB, GPIO.OUT)
+GPIO.setup(In2A, GPIO.OUT)
+GPIO.setup(In2B, GPIO.OUT)
+pwm2 = GPIO.PWM(EnB, 100)
+pwm2.start(0)
+
+# --- Limit Switches ---
+SWITCH_UPPER = 5
+SWITCH_LOWER = 6
+GPIO.setup(SWITCH_UPPER, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+GPIO.setup(SWITCH_LOWER, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+
+# ========================================
+# Motor Functions
+# ========================================
+def upper_motor_down(speed=60):
+    GPIO.output(In1A, GPIO.LOW)
+    GPIO.output(In1B, GPIO.HIGH)
+    pwm1.ChangeDutyCycle(speed)
+
+def upper_motor_stop():
+    GPIO.output(In1A, GPIO.LOW)
+    GPIO.output(In1B, GPIO.LOW)
+    pwm1.ChangeDutyCycle(0)
+
+def lower_motor_down(speed=60):
+    GPIO.output(In2A, GPIO.LOW)
+    GPIO.output(In2B, GPIO.HIGH)
+    pwm2.ChangeDutyCycle(speed)
+
+def lower_motor_stop():
+    GPIO.output(In2A, GPIO.LOW)
+    GPIO.output(In2B, GPIO.LOW)
+    pwm2.ChangeDutyCycle(0)
+
+# ========================================
+# Switch Functions (with debounce)
+# ========================================
+def is_upper_switch_pressed():
+    val = GPIO.input(SWITCH_UPPER)
+    sleep(0.02)  # debounce delay
+    if val != GPIO.input(SWITCH_UPPER):
+        return False  # unstable signal, ignore
+    return val == GPIO.LOW  # pressed when LOW (adjust if reversed)
+
+def is_lower_switch_pressed():
+    val = GPIO.input(SWITCH_LOWER)
+    sleep(0.02)
+    if val != GPIO.input(SWITCH_LOWER):
+        return False
+    return val == GPIO.LOW  # pressed when LOW
+
+# ========================================
+# Main
+# ========================================
+try:
+    print("🟢 Both motors moving DOWN until switch pressed...")
+
+    upper_active = True
+    lower_active = True
+    upper_motor_down(70)
+    lower_motor_down(70)
+
+    while True:
+        # Read switch states continuously
+        upper_pressed = is_upper_switch_pressed()
+        lower_pressed = is_lower_switch_pressed()
+
+        # Debugging info
+        print(f"[DEBUG] upper={GPIO.input(SWITCH_UPPER)}, lower={GPIO.input(SWITCH_LOWER)}")
+
+        if upper_pressed and upper_active:
+            print("⚙️ Upper switch pressed → stopping upper motor")
+            upper_motor_stop()
+            upper_active = False
+
+        if lower_pressed and lower_active:
+            print("⚙️ Lower switch pressed → stopping lower motor")
+            lower_motor_stop()
+            lower_active = False
+
+        # If both stopped, exit
+        if not upper_active and not lower_active:
+            print("✅ Both motors stopped successfully.")
+            break
+
+        sleep(0.05)
+
+except KeyboardInterrupt:
+    print("\n🛑 Interrupted by user.")
+
+finally:
+    upper_motor_stop()
+    lower_motor_stop()
+    pwm1.stop()
+    pwm2.stop()
+    GPIO.cleanup()
+    print("✅ Program terminated safely.")
