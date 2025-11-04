@@ -1,0 +1,200 @@
+import cv2
+import mediapipe as mp
+import RPi.GPIO as GPIO
+from time import sleep, time
+import math
+
+# ========================================
+# GPIO Setup
+# ========================================
+GPIO.setmode(GPIO.BCM)
+GPIO.setwarnings(False)
+
+# --- Upper Motor ---
+Ena1, In1A, In1B = 2, 3, 4
+GPIO.setup(Ena1, GPIO.OUT)
+GPIO.setup(In1A, GPIO.OUT)
+GPIO.setup(In1B, GPIO.OUT)
+pwm1 = GPIO.PWM(Ena1, 100)
+pwm1.start(0)
+
+# --- Lower Motor ---
+EnB, In2A, In2B = 17, 22, 27
+GPIO.setup(EnB, GPIO.OUT)
+GPIO.setup(In2A, GPIO.OUT)
+GPIO.setup(In2B, GPIO.OUT)
+pwm2 = GPIO.PWM(EnB, 100)
+pwm2.start(0)
+
+
+# ========================================
+# Motor Control Functions
+# ========================================
+def upper_motor_up(speed=50):
+    GPIO.output(In1A, GPIO.LOW)
+    GPIO.output(In1B, GPIO.HIGH)
+    pwm1.ChangeDutyCycle(speed)
+
+def upper_motor_down(speed=50):
+    GPIO.output(In1A, GPIO.HIGH)
+    GPIO.output(In1B, GPIO.LOW)
+    pwm1.ChangeDutyCycle(speed)
+
+def upper_motor_stop():
+    GPIO.output(In1A, GPIO.LOW)
+    GPIO.output(In1B, GPIO.LOW)
+    pwm1.ChangeDutyCycle(0)
+
+def lower_motor_up(speed=50):
+    GPIO.output(In2A, GPIO.LOW)
+    GPIO.output(In2B, GPIO.HIGH)
+    pwm2.ChangeDutyCycle(speed)
+
+def lower_motor_down(speed=50):
+    GPIO.output(In2A, GPIO.HIGH)
+    GPIO.output(In2B, GPIO.LOW)
+    pwm2.ChangeDutyCycle(speed)
+
+def lower_motor_stop():
+    GPIO.output(In2A, GPIO.LOW)
+    GPIO.output(In2B, GPIO.LOW)
+    pwm2.ChangeDutyCycle(0)
+
+def all_stop():
+    upper_motor_stop()
+    lower_motor_stop()
+
+
+# ========================================
+# Constants
+# ========================================
+MOTOR_SPEED = 50
+MAX_UP_TIME = 5.0
+RATIO_THRESHOLD = 0.8  # Below this = turtle neck posture
+
+
+# ========================================
+# Phase 1: Baseline capture using Mediapipe
+# ========================================
+mp_pose = mp.solutions.pose
+pose = mp_pose.Pose()
+cap = cv2.VideoCapture(0)
+
+print("📷 Capturing baseline posture... Please sit upright for 3 seconds.")
+baseline_dist = None
+start_time = time()
+
+while time() - start_time < 3:
+    ret, frame = cap.read()
+    if not ret:
+        continue
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    results = pose.process(rgb)
+
+    if results.pose_landmarks:
+        lm = results.pose_landmarks.landmark
+        nose = lm[mp_pose.PoseLandmark.NOSE]
+        left_shoulder = lm[mp_pose.PoseLandmark.LEFT_SHOULDER]
+        right_shoulder = lm[mp_pose.PoseLandmark.RIGHT_SHOULDER]
+
+        # Shoulder center
+        shoulder_cx = (left_shoulder.x + right_shoulder.x) / 2
+        shoulder_cy = (left_shoulder.y + right_shoulder.y) / 2
+
+        dist = math.sqrt((nose.x - shoulder_cx)**2 + (nose.y - shoulder_cy)**2)
+
+        if baseline_dist is None:
+            baseline_dist = dist
+        else:
+            baseline_dist = (baseline_dist + dist) / 2
+
+    sleep(0.05)
+
+print(f"✅ Baseline captured: {baseline_dist:.4f}\n")
+
+# ========================================
+# Phase 2: Real-time posture monitoring
+# ========================================
+print("📡 Starting real-time posture tracking...")
+try:
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            continue
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = pose.process(rgb)
+
+        if not results.pose_landmarks:
+            print("⚠️ Lost landmarks! Stopping motors and waiting...")
+            all_stop()
+            sleep(0.5)
+            continue
+
+        lm = results.pose_landmarks.landmark
+        nose = lm[mp_pose.PoseLandmark.NOSE]
+        left_shoulder = lm[mp_pose.PoseLandmark.LEFT_SHOULDER]
+        right_shoulder = lm[mp_pose.PoseLandmark.RIGHT_SHOULDER]
+
+        # Compute shoulder center
+        shoulder_cx = (left_shoulder.x + right_shoulder.x) / 2
+        shoulder_cy = (left_shoulder.y + right_shoulder.y) / 2
+
+        current_dist = math.sqrt((nose.x - shoulder_cx)**2 + (nose.y - shoulder_cy)**2)
+        ratio = current_dist / baseline_dist
+        print(f"📏 Current ratio: {ratio:.3f}")
+
+        if ratio < RATIO_THRESHOLD:
+            print("🐢 Turtle neck detected! Adjusting upward...")
+            start_up = time()
+
+            while ratio < RATIO_THRESHOLD:
+                elapsed = time() - start_up
+                if elapsed >= MAX_UP_TIME:
+                    print("⏱️ Max upward limit reached. Stopping.")
+                    break
+
+                upper_motor_up(MOTOR_SPEED)
+                lower_motor_up(MOTOR_SPEED)
+                sleep(0.1)
+
+                ret, frame = cap.read()
+                if not ret:
+                    print("⚠️ Frame lost. Stopping.")
+                    break
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                results = pose.process(rgb)
+                if not results.pose_landmarks:
+                    print("⚠️ Pose lost mid-correction. Stopping.")
+                    break
+
+                lm = results.pose_landmarks.landmark
+                nose = lm[mp_pose.PoseLandmark.NOSE]
+                left_shoulder = lm[mp_pose.PoseLandmark.LEFT_SHOULDER]
+                right_shoulder = lm[mp_pose.PoseLandmark.RIGHT_SHOULDER]
+
+                shoulder_cx = (left_shoulder.x + right_shoulder.x) / 2
+                shoulder_cy = (left_shoulder.y + right_shoulder.y) / 2
+                current_dist = math.sqrt((nose.x - shoulder_cx)**2 + (nose.y - shoulder_cy)**2)
+                ratio = current_dist / baseline_dist
+                print(f"   ↗ Adjusting... ratio={ratio:.3f}")
+
+            all_stop()
+            print("✅ Correction done or limit reached.\n")
+
+        else:
+            all_stop()
+            print("😌 Normal posture. Motors stopped.\n")
+
+        sleep(0.2)
+
+except KeyboardInterrupt:
+    print("\n🛑 Interrupted by user.")
+
+finally:
+    cap.release()
+    pose.close()
+    all_stop()
+    pwm1.stop()
+    pwm2.stop()
+    GPIO.cleanup()
+    print("✅ Program terminated safely.")
