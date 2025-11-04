@@ -32,11 +32,22 @@ SWITCH_LOWER = 6
 GPIO.setup(SWITCH_UPPER, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 GPIO.setup(SWITCH_LOWER, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
-def is_upper_switch_pressed():
-    return GPIO.input(SWITCH_UPPER) == GPIO.LOW
-
 def is_lower_switch_pressed():
-    return GPIO.input(SWITCH_LOWER) == GPIO.LOW
+    """Return True if the lower switch is pressed (debounced)."""
+    if GPIO.input(SWITCH_LOWER) == GPIO.LOW:
+        time.sleep(0.02)  # debounce delay (20ms)
+        if GPIO.input(SWITCH_LOWER) == GPIO.LOW:
+            return True
+    return False
+
+def is_upper_switch_pressed():
+    """Return True if the upper switch is pressed (debounced)."""
+    if GPIO.input(SWITCH_UPPER) == GPIO.LOW:
+        time.sleep(0.02)
+        if GPIO.input(SWITCH_UPPER) == GPIO.LOW:
+            return True
+    return False
+
 
 # ========================================
 # Motor Control Functions
