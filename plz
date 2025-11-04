@@ -1,0 +1,425 @@
+import cv2
+import mediapipe as mp
+import RPi.GPIO as GPIO
+from time import sleep, time
+import math
+
+# ========================================
+# GPIO Setup
+# ========================================
+GPIO.setmode(GPIO.BCM)
+GPIO.setwarnings(False)
+
+# --- Upper Motor ---
+Ena1, In1A, In1B = 2, 3, 4
+GPIO.setup(Ena1, GPIO.OUT)
+GPIO.setup(In1A, GPIO.OUT)
+GPIO.setup(In1B, GPIO.OUT)
+pwm1 = GPIO.PWM(Ena1, 100)
+pwm1.start(0)
+
+# --- Lower Motor ---
+EnB, In2A, In2B = 17, 22, 27
+GPIO.setup(EnB, GPIO.OUT)
+GPIO.setup(In2A, GPIO.OUT)
+GPIO.setup(In2B, GPIO.OUT)
+pwm2 = GPIO.PWM(EnB, 100)
+pwm2.start(0)
+
+# --- Limit Switches (one per motor) ---
+SWITCH_UPPER = 5   # Upper motor bottom switch
+SWITCH_LOWER = 6   # Lower motor bottom switch
+
+GPIO.setup(SWITCH_UPPER, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+GPIO.setup(SWITCH_LOWER, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+
+def is_upper_switch_pressed():
+    return GPIO.input(SWITCH_UPPER) == GPIO.LOW
+
+def is_lower_switch_pressed():
+    return GPIO.input(SWITCH_LOWER) == GPIO.LOW
+
+# ========================================
+# Motor Control Functions
+# ========================================
+def upper_motor_up(speed=50):
+    """Upper motor upward"""
+    GPIO.output(In1A, GPIO.LOW)
+    GPIO.output(In1B, GPIO.HIGH)
+    pwm1.ChangeDutyCycle(speed)
+
+def upper_motor_down(speed=50):
+    """Upper motor downward"""
+    GPIO.output(In1A, GPIO.HIGH)
+    GPIO.output(In1B, GPIO.LOW)
+    pwm1.ChangeDutyCycle(speed)
+
+def upper_motor_stop():
+    """Upper motor stop"""
+    GPIO.output(In1A, GPIO.LOW)
+    GPIO.output(In1B, GPIO.LOW)
+    pwm1.ChangeDutyCycle(0)
+
+def lower_motor_up(speed=50):
+    """Lower motor upward"""
+    GPIO.output(In2A, GPIO.LOW)
+    GPIO.output(In2B, GPIO.HIGH)
+    pwm2.ChangeDutyCycle(speed)
+
+def lower_motor_down(speed=50):
+    """Lower motor downward"""
+    GPIO.output(In2A, GPIO.HIGH)
+    GPIO.output(In2B, GPIO.LOW)
+    pwm2.ChangeDutyCycle(speed)
+
+def lower_motor_stop():
+    """Lower motor stop"""
+    GPIO.output(In2A, GPIO.LOW)
+    GPIO.output(In2B, GPIO.LOW)
+    pwm2.ChangeDutyCycle(0)
+
+def motor_up(speed=50):
+    """Move both motors UP"""
+    upper_motor_up(speed)
+    lower_motor_up(speed)
+
+def motor_stop():
+    """Stop both motors"""
+    upper_motor_stop()
+    lower_motor_stop()
+
+# ========================================
+# Ear-Shoulder Angle Calculation (from vertical line)
+# ========================================
+def calculate_ear_shoulder_angle(ear, shoulder):
+    """
+    Calculate the angle between ear-shoulder line and vertical line
+    
+    Normal posture: Ear directly above shoulder → small angle (0~10 degrees)
+    Turtle neck: Ear forward of shoulder → large angle (30~60+ degrees)
+    
+    Measures deviation from vertical alignment
+    
+    Args:
+        ear: MediaPipe landmark for ear
+        shoulder: MediaPipe landmark for shoulder
+    
+    Returns:
+        angle (degrees): Deviation from vertical line
+    """
+    dx = ear.x - shoulder.x  # horizontal distance
+    dy = shoulder.y - ear.y  # vertical distance (y increases downward)
+    
+    # Calculate angle from vertical line
+    angle = abs(math.degrees(math.atan2(dx, dy)))
+    
+    return angle
+
+# ========================================
+# Pose Detection Setup
+# ========================================
+mp_pose = mp.solutions.pose
+pose = mp_pose.Pose(
+    min_detection_confidence=0.5,
+    min_tracking_confidence=0.5,
+    model_complexity=1
+)
+cap = cv2.VideoCapture(0)
+
+# ========================================
+# Parameters
+# ========================================
+MOTOR_SPEED = 50
+MAX_UP_TIME = 5.0  # Maximum upward movement time (seconds)
+UP_CLEAR_TIME = 2.0  # Time to move up to clear switches (seconds)
+
+# Turtle neck detection threshold
+TURTLE_NECK_ANGLE = 30  # Angles >= 30 degrees indicate turtle neck
+
+baseline_angle = None
+
+# ========================================
+# Phase 1: Initial Switch State Check and Clear
+# ========================================
+print("🔧 Initialization Phase 1: Checking initial switch states...")
+print("")
+
+upper_needs_clear = is_upper_switch_pressed()
+lower_needs_clear = is_lower_switch_pressed()
+
+if upper_needs_clear:
+    print("⚠️  UPPER switch is already pressed. Moving UP to clear...")
+if lower_needs_clear:
+    print("⚠️  LOWER switch is already pressed. Moving UP to clear...")
+
+# Move motors up if switches are pressed
+if upper_needs_clear or lower_needs_clear:
+    start_time = time()
+    while time() - start_time < UP_CLEAR_TIME:
+        if upper_needs_clear:
+            upper_motor_up(MOTOR_SPEED)
+        if lower_needs_clear:
+            lower_motor_up(MOTOR_SPEED)
+        sleep(0.05)
+    
+    # Stop motors
+    if upper_needs_clear:
+        upper_motor_stop()
+        print("✅ UPPER motor cleared from switch")
+    if lower_needs_clear:
+        lower_motor_stop()
+        print("✅ LOWER motor cleared from switch")
+    
+    sleep(0.5)
+else:
+    print("✅ No switches pressed initially. Proceeding directly to descent.")
+    print("")
+
+# ========================================
+# Phase 2: Move All Motors Down to Press Switches
+# ========================================
+print("")
+print("🔧 Initialization Phase 2: Moving motors DOWN to find switches...")
+print("")
+
+upper_complete = False
+lower_complete = False
+
+try:
+    while not (upper_complete and lower_complete):
+        # Upper motor control
+        if not upper_complete:
+            if is_upper_switch_pressed():
+                upper_motor_stop()
+                upper_complete = True
+                print("✅ UPPER motor switch pressed - STOPPED")
+            else:
+                upper_motor_down(MOTOR_SPEED)
+        
+        # Lower motor control
+        if not lower_complete:
+            if is_lower_switch_pressed():
+                lower_motor_stop()
+                lower_complete = True
+                print("✅ LOWER motor switch pressed - STOPPED")
+            else:
+                lower_motor_down(MOTOR_SPEED)
+        
+        sleep(0.05)
+
+    print("")
+    print("="*60)
+    print("🎉 Initialization Complete!")
+    print("🎉 Both motors at bottom position!")
+    print("="*60)
+    print("")
+
+    # ========================================
+    # Phase 3: Baseline Angle Calibration
+    # ========================================
+    print("="*60)
+    print("📸 BASELINE CALIBRATION - LEFT SIDE VIEW")
+    print("="*60)
+    print("⚠️  IMPORTANT: Position camera to capture LEFT side")
+    print("   (Only shoulder and ear need to be visible)")
+    print("")
+    print("👤 Sit with CORRECT posture:")
+    print("   - Back straight")
+    print("   - Head up")
+    print("   - Ear directly above shoulder")
+    print("")
+
+    for i in range(3, 0, -1):
+        print(f"⏱️  Capturing in {i} seconds...")
+        sleep(1)
+
+    print("📸 Capturing baseline NOW...")
+
+    baseline_captured = False
+    capture_start = time()
+
+    while not baseline_captured:
+        if time() - capture_start > 5.0:
+            print("❌ Failed to detect pose in 5 seconds")
+            raise RuntimeError("Baseline capture failed")
+        
+        ret, frame = cap.read()
+        if not ret:
+            print("❌ Camera error")
+            sleep(0.1)
+            continue
+        
+        frame = cv2.flip(frame, 1)
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = pose.process(rgb)
+        
+        if results.pose_landmarks:
+            lm = results.pose_landmarks.landmark
+            
+            # Left side landmarks
+            left_ear = lm[mp_pose.PoseLandmark.LEFT_EAR]
+            left_shoulder = lm[mp_pose.PoseLandmark.LEFT_SHOULDER]
+            
+            # Calculate ear-shoulder angle
+            baseline_angle = calculate_ear_shoulder_angle(left_ear, left_shoulder)
+            
+            # Validity check
+            if 0 <= baseline_angle <= 60:  # reasonable range
+                baseline_captured = True
+                print(f"✅ Baseline captured!")
+                print(f"   Ear-Shoulder angle from vertical: {baseline_angle:.1f}°")
+                
+                if baseline_angle < TURTLE_NECK_ANGLE:
+                    print(f"   ✅ Good posture! Ear is well aligned (< {TURTLE_NECK_ANGLE}°)")
+                else:
+                    print(f"   ⚠️  Warning: Baseline shows forward head posture")
+                    print(f"   💡 Try to align ear more directly above shoulder")
+                
+                print("")
+                sleep(1)
+            else:
+                print(f"⚠️  Invalid angle ({baseline_angle:.1f}°), retrying...")
+                sleep(0.1)
+
+    # ========================================
+    # Phase 4: Real-time Monitoring and Correction
+    # ========================================
+    print("="*60)
+    print("🔍 ACTIVE MONITORING - Turtle Neck Detection")
+    print("="*60)
+    print(f"📊 Threshold: Angle >= {TURTLE_NECK_ANGLE}° = Turtle Neck")
+    print(f"📊 Your Baseline: {baseline_angle:.1f}°")
+    print("")
+
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            print("❌ Camera error")
+            break
+        
+        frame = cv2.flip(frame, 1)
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = pose.process(rgb)
+        
+        if not results.pose_landmarks:
+            print("⚠️  Pose lost - stopping motors")
+            motor_stop()
+            sleep(0.2)
+            continue
+        
+        lm = results.pose_landmarks.landmark
+        left_ear = lm[mp_pose.PoseLandmark.LEFT_EAR]
+        left_shoulder = lm[mp_pose.PoseLandmark.LEFT_SHOULDER]
+        
+        # Calculate current angle
+        current_angle = calculate_ear_shoulder_angle(left_ear, left_shoulder)
+        
+        print(f"📐 Angle: {current_angle:5.1f}°", end='')
+        
+        # Turtle neck detection (angle >= 30 degrees)
+        if current_angle >= TURTLE_NECK_ANGLE:
+            print(f" → 🐢 TURTLE NECK! (>= {TURTLE_NECK_ANGLE}°) Correcting...")
+            
+            correction_start = time()
+            
+            while True:
+                # Check time limit
+                if time() - correction_start > MAX_UP_TIME:
+                    print(f"\n⏰ Max correction time ({MAX_UP_TIME}s) reached")
+                    motor_stop()
+                    break
+                
+                motor_up(MOTOR_SPEED)
+                sleep(0.1)
+                
+                # Real-time posture update
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                
+                frame = cv2.flip(frame, 1)
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                results = pose.process(rgb)
+                
+                if not results.pose_landmarks:
+                    print("\n⚠️  Pose lost during correction")
+                    motor_stop()
+                    break
+                
+                lm = results.pose_landmarks.landmark
+                left_ear = lm[mp_pose.PoseLandmark.LEFT_EAR]
+                left_shoulder = lm[mp_pose.PoseLandmark.LEFT_SHOULDER]
+                
+                current_angle = calculate_ear_shoulder_angle(left_ear, left_shoulder)
+                
+                print(f"📐 Correcting... Angle: {current_angle:5.1f}°", end='\r')
+                
+                # Check if posture is corrected (angle < 30 degrees)
+                if current_angle < TURTLE_NECK_ANGLE:
+                    print(f"\n✅ Posture corrected! Angle: {current_angle:.1f}° (< {TURTLE_NECK_ANGLE}°)")
+                    motor_stop()
+                    break
+            
+            motor_stop()
+        else:
+            print(f" → ✅ Good posture (< {TURTLE_NECK_ANGLE}°)")
+            motor_stop()
+        
+        sleep(0.2)
+
+except KeyboardInterrupt:
+    print("\n🛑 Interrupted by user")
+
+finally:
+    cap.release()
+    upper_motor_stop()
+    lower_motor_stop()
+    pwm1.stop()
+    pwm2.stop()
+    GPIO.cleanup()
+    print("✅ Program terminated safely")
+```
+
+---
+
+## 🎯 **Combined Code Structure**
+
+### **Phase 1: Initial Switch Check**
+- Check if switches are already pressed
+- Move motors UP to clear if needed
+
+### **Phase 2: Move Down to Bottom**
+- Both motors descend independently
+- Stop when each switch is pressed
+
+### **Phase 3: Baseline Angle Calibration**
+- Capture correct posture angle
+- Wait for both switches to be pressed
+
+### **Phase 4: Active Monitoring**
+- Continuously monitor ear-shoulder angle
+- Correct posture by moving motors UP when turtle neck detected
+
+---
+
+## 📊 **Expected Execution Flow**
+```
+🔧 Phase 1: Check switches
+   ⚠️  UPPER switch pressed → Move UP 2s
+   ✅ Cleared
+
+🔧 Phase 2: Move DOWN to bottom
+   ✅ UPPER motor switch pressed - STOPPED
+   ✅ LOWER motor switch pressed - STOPPED
+   🎉 Initialization Complete!
+
+📸 Phase 3: Baseline calibration
+   ⏱️  Capturing in 3 seconds...
+   ⏱️  Capturing in 2 seconds...
+   ⏱️  Capturing in 1 seconds...
+   ✅ Baseline captured! Angle: 12.3°
+
+🔍 Phase 4: Active monitoring
+   📐 Angle:  11.5° → ✅ Good posture
+   📐 Angle:  35.8° → 🐢 TURTLE NECK! Correcting...
+   ✅ Posture corrected! Angle: 28.7°
