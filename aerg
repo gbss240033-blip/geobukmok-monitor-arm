@@ -1,0 +1,86 @@
+import RPi.GPIO as GPIO
+from time import sleep
+
+GPIO.setmode(GPIO.BCM)
+GPIO.setwarnings(False)
+
+# --- Upper Motor ---
+Ena1, In1A, In1B = 2, 3, 4
+GPIO.setup(Ena1, GPIO.OUT)
+GPIO.setup(In1A, GPIO.OUT)
+GPIO.setup(In1B, GPIO.OUT)
+pwm1 = GPIO.PWM(Ena1, 100)
+pwm1.start(100)
+
+# --- Lower Motor ---
+EnB, In2A, In2B = 17, 22, 27
+GPIO.setup(EnB, GPIO.OUT)
+GPIO.setup(In2A, GPIO.OUT)
+GPIO.setup(In2B, GPIO.OUT)
+pwm2 = GPIO.PWM(EnB, 100)
+pwm2.start(100)
+
+# --- Limit Switches ---
+SWITCH_UPPER = 5
+SWITCH_LOWER = 6
+GPIO.setup(SWITCH_UPPER, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+GPIO.setup(SWITCH_LOWER, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+
+# --- Motor Control Functions ---
+def upper_motor_up():
+    GPIO.output(In1A, GPIO.HIGH)
+    GPIO.output(In1B, GPIO.LOW)
+
+def upper_motor_down():
+    GPIO.output(In1A, GPIO.LOW)
+    GPIO.output(In1B, GPIO.HIGH)
+
+def lower_motor_up():
+    GPIO.output(In2A, GPIO.HIGH)
+    GPIO.output(In2B, GPIO.LOW)
+
+def lower_motor_down():
+    GPIO.output(In2A, GPIO.LOW)
+    GPIO.output(In2B, GPIO.HIGH)
+
+def stop_upper():
+    GPIO.output(In1A, GPIO.LOW)
+    GPIO.output(In1B, GPIO.LOW)
+
+def stop_lower():
+    GPIO.output(In2A, GPIO.LOW)
+    GPIO.output(In2B, GPIO.LOW)
+
+# --- Main Loop ---
+try:
+    while True:
+        upper_state = GPIO.input(SWITCH_UPPER)  # 1 = not pressed, 0 = pressed
+        lower_state = GPIO.input(SWITCH_LOWER)
+
+        print(f"Upper switch: {upper_state}, Lower switch: {lower_state}")
+
+        # 예시: 아래로 내려가는 동작 (하부 모터 기준)
+        if lower_state == GPIO.HIGH:  # 스위치가 눌리지 않았을 때만 동작
+            lower_motor_down()
+        else:
+            print("Lower switch pressed → STOP")
+            stop_lower()
+
+        # 예시: 위로 올리는 동작 (상부 모터 기준)
+        if upper_state == GPIO.HIGH:  # 스위치가 눌리지 않았을 때만 동작
+            upper_motor_up()
+        else:
+            print("Upper switch pressed → STOP")
+            stop_upper()
+
+        sleep(0.05)
+
+except KeyboardInterrupt:
+    pass
+
+finally:
+    stop_upper()
+    stop_lower()
+    pwm1.stop()
+    pwm2.stop()
+    GPIO.cleanup()
