@@ -1,0 +1,56 @@
+import RPi.GPIO as GPIO
+from time import sleep
+
+# --- Setup ---
+GPIO.setmode(GPIO.BCM)
+GPIO.setwarnings(False)
+
+# Motor pins
+ENA, IN1, IN2 = 2, 3, 4
+GPIO.setup(ENA, GPIO.OUT)
+GPIO.setup(IN1, GPIO.OUT)
+GPIO.setup(IN2, GPIO.OUT)
+pwm = GPIO.PWM(ENA, 1000)
+pwm.start(100)
+
+# Limit switch pins
+upper_switch = 17
+lower_switch = 27
+GPIO.setup(upper_switch, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+GPIO.setup(lower_switch, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+
+# --- Motor control functions ---
+def motor_up():
+    GPIO.output(IN1, GPIO.HIGH)
+    GPIO.output(IN2, GPIO.LOW)
+
+def motor_down():
+    GPIO.output(IN1, GPIO.LOW)
+    GPIO.output(IN2, GPIO.HIGH)
+
+def motor_stop():
+    GPIO.output(IN1, GPIO.LOW)
+    GPIO.output(IN2, GPIO.LOW)
+
+# --- Main loop ---
+try:
+    while True:
+        upper_state = GPIO.input(upper_switch)
+        lower_state = GPIO.input(lower_switch)
+        print(f"Upper: {upper_state}, Lower: {lower_state}")
+
+        # 예: 아래로 내릴 때
+        if lower_state == GPIO.HIGH:  # 스위치 안 눌림
+            motor_down()
+        else:  # 스위치 눌림
+            print("Lower limit reached - stopping motor.")
+            motor_stop()
+
+        sleep(0.1)
+
+except KeyboardInterrupt:
+    pass
+finally:
+    motor_stop()
+    pwm.stop()
+    GPIO.cleanup()
