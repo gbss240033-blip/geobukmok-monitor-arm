@@ -1,0 +1,173 @@
+import RPi.GPIO as GPIO
+from time import sleep, time
+
+# ========================================
+# GPIO Setup
+# ========================================
+GPIO.setmode(GPIO.BCM)
+GPIO.setwarnings(False)
+
+# --- Upper Motor ---
+Ena1, In1A, In1B = 2, 3, 4
+GPIO.setup(Ena1, GPIO.OUT)
+GPIO.setup(In1A, GPIO.OUT)
+GPIO.setup(In1B, GPIO.OUT)
+pwm1 = GPIO.PWM(Ena1, 100)
+pwm1.start(0)
+
+# --- Lower Motor ---
+EnB, In2A, In2B = 17, 22, 27
+GPIO.setup(EnB, GPIO.OUT)
+GPIO.setup(In2A, GPIO.OUT)
+GPIO.setup(In2B, GPIO.OUT)
+pwm2 = GPIO.PWM(EnB, 100)
+pwm2.start(0)
+
+# --- Limit Switches (one per motor, bottom only) ---
+SWITCH_UPPER = 5
+SWITCH_LOWER = 6
+
+GPIO.setup(SWITCH_UPPER, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+GPIO.setup(SWITCH_LOWER, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+
+def is_upper_switch_pressed():
+    return GPIO.input(SWITCH_UPPER) == GPIO.LOW
+
+def is_lower_switch_pressed():
+    return GPIO.input(SWITCH_LOWER) == GPIO.LOW
+
+# ========================================
+# Motor Control Functions
+# ========================================
+def upper_motor_up(speed=50):
+    """Move upper motor upward"""
+    GPIO.output(In1A, GPIO.LOW)
+    GPIO.output(In1B, GPIO.HIGH)
+    pwm1.ChangeDutyCycle(speed)
+
+def upper_motor_down(speed=50):
+    """Move upper motor downward"""
+    GPIO.output(In1A, GPIO.HIGH)
+    GPIO.output(In1B, GPIO.LOW)
+    pwm1.ChangeDutyCycle(speed)
+
+def upper_motor_stop():
+    """Stop upper motor"""
+    GPIO.output(In1A, GPIO.LOW)
+    GPIO.output(In1B, GPIO.LOW)
+    pwm1.ChangeDutyCycle(0)
+
+def lower_motor_up(speed=50):
+    """Move lower motor upward"""
+    GPIO.output(In2A, GPIO.LOW)
+    GPIO.output(In2B, GPIO.HIGH)
+    pwm2.ChangeDutyCycle(speed)
+
+def lower_motor_down(speed=50):
+    """Move lower motor downward"""
+    GPIO.output(In2A, GPIO.HIGH)
+    GPIO.output(In2B, GPIO.LOW)
+    pwm2.ChangeDutyCycle(speed)
+
+def lower_motor_stop():
+    """Stop lower motor"""
+    GPIO.output(In2A, GPIO.LOW)
+    GPIO.output(In2B, GPIO.LOW)
+    pwm2.ChangeDutyCycle(0)
+
+# ========================================
+# Constants
+# ========================================
+MOTOR_SPEED = 50
+MAX_UP_TIME = 5.0  # Max upward movement time (seconds)
+RATIO_THRESHOLD = 0.8  # Posture correction threshold
+
+# ========================================
+# Phase 1-2: Move both motors DOWN until bottom switches pressed
+# ========================================
+print("🔧 Initialization Phase: Moving DOWN to find bottom switches...")
+
+upper_complete = False
+lower_complete = False
+
+try:
+    while not (upper_complete and lower_complete):
+        # Upper motor
+        if not upper_complete:
+            if is_upper_switch_pressed():
+                upper_motor_stop()
+                upper_complete = True
+                print("✅ Upper switch pressed - stopped")
+            else:
+                upper_motor_down(MOTOR_SPEED)
+
+        # Lower motor
+        if not lower_complete:
+            if is_lower_switch_pressed():
+                lower_motor_stop()
+                lower_complete = True
+                print("✅ Lower switch pressed - stopped")
+            else:
+                lower_motor_down(MOTOR_SPEED)
+
+        sleep(0.05)
+
+    print("🎉 Both motors reached bottom. Baseline captured.")
+    baseline_ratio = 1.0  # Set baseline (to be used for posture ratio)
+    print("Baseline ratio set to 1.0\n")
+
+# ========================================
+# Phase 3: Posture correction control
+# ========================================
+    while True:
+        # ---- Example: posture ratio input from Mediapipe ----
+        # (You can replace this with your real ratio)
+        # For now, let's simulate ratio changes manually:
+        ratio = float(input("Enter current posture ratio (0~1): "))
+
+        # ---- Safety check ----
+        if ratio is None or ratio <= 0:
+            print("⚠️  Lost posture detection! Stopping motors and waiting...")
+            upper_motor_stop()
+            lower_motor_stop()
+            continue  # Stay in loop but do not re-calibrate baseline
+
+        # ---- Posture correction logic ----
+        if ratio < RATIO_THRESHOLD:
+            print("🐢 Poor posture detected! Adjusting upward...")
+
+            start_time = time()
+            while ratio < RATIO_THRESHOLD:
+                elapsed = time() - start_time
+                if elapsed >= MAX_UP_TIME:
+                    print("⏱️ Reached maximum upward time limit. Stopping.")
+                    break
+
+                upper_motor_up(MOTOR_SPEED)
+                lower_motor_up(MOTOR_SPEED)
+
+                # (You can update ratio dynamically here if real-time input)
+                sleep(0.1)
+                print(f"   Adjusting... elapsed={elapsed:.2f}s")
+
+            upper_motor_stop()
+            lower_motor_stop()
+            print("✅ Correction complete or limit reached.\n")
+
+        else:
+            print("😌 Normal posture. Motors stopped.")
+            upper_motor_stop()
+            lower_motor_stop()
+
+        sleep(0.1)
+
+except KeyboardInterrupt:
+    print("\n🛑 Interrupted by user.")
+
+finally:
+    upper_motor_stop()
+    lower_motor_stop()
+    pwm1.stop()
+    pwm2.stop()
+    GPIO.cleanup()
+    print("✅ Program terminated safely.")
