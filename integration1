@@ -1,0 +1,183 @@
+import RPi.GPIO as GPIO
+import time
+import cv2
+import mediapipe as mp
+import numpy as np
+
+# ============================================================
+# GPIO Setup
+# ============================================================
+GPIO.setmode(GPIO.BCM)
+GPIO.setwarnings(False)
+
+# --- Upper Motor ---
+Ena1, In1A, In1B = 2, 3, 4
+GPIO.setup(Ena1, GPIO.OUT)
+GPIO.setup(In1A, GPIO.OUT)
+GPIO.setup(In1B, GPIO.OUT)
+pwm1 = GPIO.PWM(Ena1, 100)
+pwm1.start(0)
+
+# --- Lower Motor ---
+EnB, In2A, In2B = 17, 22, 27
+GPIO.setup(EnB, GPIO.OUT)
+GPIO.setup(In2A, GPIO.OUT)
+GPIO.setup(In2B, GPIO.OUT)
+pwm2 = GPIO.PWM(EnB, 100)
+pwm2.start(0)
+
+# --- Limit Switches ---
+upper_switch = 10
+lower_switch = 9
+GPIO.setup(upper_switch, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
+GPIO.setup(lower_switch, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
+
+# ============================================================
+# Motor Control Functions
+# ============================================================
+def stop_upper():
+    GPIO.output(In1A, GPIO.LOW)
+    GPIO.output(In1B, GPIO.LOW)
+    pwm1.ChangeDutyCycle(0)
+    print("🛑 Upper motor stopped")
+
+def stop_lower():
+    GPIO.output(In2A, GPIO.LOW)
+    GPIO.output(In2B, GPIO.LOW)
+    pwm2.ChangeDutyCycle(0)
+    print("🛑 Lower motor stopped")
+
+def move_upper_down(speed=70):
+    GPIO.output(In1A, GPIO.LOW)
+    GPIO.output(In1B, GPIO.HIGH)
+    pwm1.ChangeDutyCycle(speed)
+    print("⬇️ Upper motor moving down")
+
+def move_lower_down(speed=70):
+    GPIO.output(In2A, GPIO.LOW)
+    GPIO.output(In2B, GPIO.HIGH)
+    pwm2.ChangeDutyCycle(speed)
+    print("⬇️ Lower motor moving down")
+
+# ============================================================
+# Phase 1: Move motors until both switches are pressed
+# ============================================================
+print("🔧 Adjusting monitor arms... (waiting for both switches to press)")
+
+try:
+    while True:
+        upper_pressed = GPIO.input(upper_switch)
+        lower_pressed = GPIO.input(lower_switch)
+
+        # Upper motor control
+        if upper_pressed:
+            stop_upper()
+        else:
+            move_upper_down()
+
+        # Lower motor control
+        if lower_pressed:
+            stop_lower()
+        else:
+            move_lower_down()
+
+        print(f"Upper: {upper_pressed}, Lower: {lower_pressed}")
+        time.sleep(0.05)
+
+        # ✅ 두 스위치 모두 눌리면 종료
+        if upper_pressed and lower_pressed:
+            print("✅ Both switches pressed. Baseline position reached.")
+            stop_upper()
+            stop_lower()
+            break
+
+except KeyboardInterrupt:
+    print("\nProgram stopped by user during baseline adjustment")
+    GPIO.cleanup()
+    exit()
+
+# ============================================================
+# Phase 2: Face tracking (Turtle Neck Detection)
+# ============================================================
+print("🎥 Starting Turtle Neck Detection System...")
+
+mp_face = mp.solutions.face_mesh
+mp_draw = mp.solutions.drawing_utils
+face_mesh = mp_face.FaceMesh(max_num_faces=1, refine_landmarks=True, min_detection_confidence=0.6)
+
+cap = cv2.VideoCapture(0)
+
+baseline_nose = None
+baseline_ear = None
+
+print("Press 'c' to calibrate (set neutral posture)")
+print("Press 'q' to quit")
+
+try:
+    while cap.isOpened():
+        success, img = cap.read()
+        if not success:
+            break
+
+        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        results = face_mesh.process(img_rgb)
+        h, w, _ = img.shape
+
+        if results.multi_face_landmarks:
+            for face_landmarks in results.multi_face_landmarks:
+                nose = face_landmarks.landmark[1]
+                right_ear = face_landmarks.landmark[234]
+                left_ear = face_landmarks.landmark[454]
+
+                nose_pt = np.array([nose.x * w, nose.y * h])
+                ear_mid = np.array([(right_ear.x + left_ear.x) * w / 2,
+                                    (right_ear.y + left_ear.y) * h / 2])
+
+                # --- 거북목 감지 ---
+                if baseline_nose is not None:
+                    forward_shift = nose_pt[0] - baseline_nose[0]
+                    downward_shift = nose_pt[1] - baseline_nose[1]
+
+                    forward_ratio = forward_shift / w * 100
+                    downward_ratio = downward_shift / h * 100
+
+                    cv2.putText(img, f"Forward: {forward_ratio:+.2f}%", (30, 60),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,255,0), 2)
+                    cv2.putText(img, f"Downward: {downward_ratio:+.2f}%", (30, 90),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,255,0), 2)
+
+                    # --- 경고 표시 ---
+                    if forward_ratio > 5:
+                        cv2.putText(img, "Warning: Forward Head!", (30, 120),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,0,255), 2)
+                    if downward_ratio > 5:
+                        cv2.putText(img, "Warning: Looking Down!", (30, 150),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,0,255), 2)
+
+                # 얼굴 랜드마크 시각화
+                mp_draw.draw_landmarks(img, face_landmarks, mp_face.FACEMESH_CONTOURS,
+                                       mp_draw.DrawingSpec(color=(0,255,255), thickness=1, circle_radius=1),
+                                       mp_draw.DrawingSpec(color=(255,0,255), thickness=1))
+
+        cv2.imshow("Turtle Neck Detector", img)
+
+        # --- 키 입력 처리 ---
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('c'):
+            if results.multi_face_landmarks:
+                baseline_nose = nose_pt.copy()
+                baseline_ear = ear_mid.copy()
+                print("✅ Calibrated!")
+        elif key == ord('q'):
+            break
+
+except KeyboardInterrupt:
+    print("\nProgram stopped by user during face tracking")
+
+finally:
+    cap.release()
+    cv2.destroyAllWindows()
+    pwm1.stop()
+    pwm2.stop()
+    GPIO.cleanup()
+    print("🧹 Clean exit complete.")
